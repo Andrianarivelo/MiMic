@@ -1,0 +1,21 @@
+# Upstream VocalPy source (its own repository; install via `pip install vocalpy`)
+/vocalpy/
+
+# Python build / cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# App output
+vocalpy_output/
+*.npz
+
+# Environments / editors
+.venv/
+.env
+.vscode/
+.idea/
+.DS_Store

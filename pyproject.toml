@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vocalpy-gui"
+version = "0.1.0"
+description = "A PySide6 desktop app for batch spectrogram processing and visualization with VocalPy"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "vocalpy>=0.11.0",
+    "PySide6>=6.6",
+    "matplotlib>=3.9",
+    "numpy>=2.0",
+]
+
+[project.scripts]
+vocalpy-gui = "vpgui.app:main"
+
+[tool.setuptools]
+packages = ["vpgui"]

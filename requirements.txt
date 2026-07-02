@@ -1,0 +1,5 @@
+# Runtime dependencies for the VocalPy Spectrogram Workbench (MiMic).
+vocalpy>=0.11.0
+PySide6>=6.6
+matplotlib>=3.9
+numpy>=2.0
