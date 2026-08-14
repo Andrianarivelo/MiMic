@@ -12,6 +12,7 @@ dist/
 # App output
 vocalpy_output/
 *.npz
+scripts/calls_meta.csv
 
 # Environments / editors
 .venv/
