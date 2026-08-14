@@ -1,0 +1,38 @@
+# Conda environment for the VocalPy USV Workbench.
+#
+# Creates the `UVS` environment with the full gumadeiras/vocalpy detection stack
+# (torch CPU build, torchvision, OpenCV, scikit-image) plus the PySide6 GUI layer.
+#
+#   conda env create -f environment.yaml
+#   conda activate UVS
+#   pip install -e ./vocalpy_engine --no-deps   # vendored gumadeiras/vocalpy engine
+#   pip install -e . --no-deps                  # this app (vpgui): vocalpy-gui / vocalpy-cli
+#   git -C vocalpy_engine lfs pull              # fetch the pretrained model checkpoints
+#
+# Detection needs numpy/scipy/opencv/scikit-image; classification + SqueakOut
+# segmentation additionally need torch/torchvision and the Git-LFS checkpoints.
+name: UVS
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - git-lfs
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cpu
+      # --- gumadeiras/vocalpy engine deps (pinned to its constraints/base.txt) ---
+      - torch==2.11.0
+      - torchvision==0.26.0
+      - opencv-python-headless==4.13.0.92
+      - scikit-image==0.26.0
+      - scipy==1.17.1
+      - numpy==2.4.4
+      - pandas==2.3.3
+      - seaborn==0.13.2
+      - matplotlib==3.10.8
+      - soundfile==0.13.1
+      - joblib==1.5.3
+      - Pillow==12.2.0
+      - PyYAML==6.0.3
+      # --- GUI layer ---
+      - PySide6>=6.7

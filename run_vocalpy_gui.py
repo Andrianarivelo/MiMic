@@ -9,7 +9,13 @@ import os
 import sys
 
 # Make sure the package next to this file is importable without installation.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, ROOT)
+
+# Expose the vendored gumadeiras/vocalpy engine when not installed editable.
+LOCAL_VOCALPY = os.path.join(ROOT, "vocalpy_engine")
+if os.path.isdir(os.path.join(LOCAL_VOCALPY, "vocalpy")):
+    sys.path.insert(0, LOCAL_VOCALPY)
 
 from vpgui.app import main  # noqa: E402
 

@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=82", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vocalpy"
+version = "0.1.0"
+description = "Vocal analysis framework for detecting and classifying animal vocalizations."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Gustavo Madeira Santana" },
+]
+dependencies = [
+  "joblib>=1.5,<2",
+  "matplotlib>=3.10,<4",
+  "numpy>=2.4,<3",
+  "opencv-python-headless>=4.13,<5",
+  "pandas>=2.3,<3",
+  "Pillow>=12,<13",
+  "PyYAML>=6,<7",
+  "scikit-image>=0.26,<1",
+  "scipy>=1.17,<2",
+  "seaborn>=0.13,<1",
+  "soundfile>=0.13,<1",
+  "torch>=2.11,<2.12",
+  "torchvision>=0.26,<0.27",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9,<10",
+  "pytest-cov>=7,<8",
+]
+docs = [
+  "furo>=2025.12,<2026",
+  "myst-parser>=4,<5",
+  "sphinx>=8,<9",
+]
+notebooks = [
+  "jupyterlab>=4.5.7,<5",
+  "notebook>=7.5.6,<8",
+]
+
+[project.scripts]
+vocalpy = "vocalpy.cli:main"
+vocalpy-models = "vocalpy.model_cli:main"
+
+[project.urls]
+Homepage = "https://vocalpy.gumadeiras.com"
+Repository = "https://github.com/gumadeiras/vocalpy"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["vocalpy*"]
+
+[tool.setuptools.package-data]
+vocalpy = [
+  "configs/*.yml",
+  "nn/pretrained/*.json",
+  "nn/pretrained/*.ckpt",
+  "nn/pretrained/*.pth.tar",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["vocalpy/tests"]

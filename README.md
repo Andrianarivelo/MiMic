@@ -1,85 +1,144 @@
-# VocalPy Spectrogram Workbench
+# 🐭🔊 VocalPy USV Workbench
 
-A dark "scientific workstation" desktop app (PySide6) for **batch spectrogram
-processing** and **interactive spectrogram visualization**, built on
-[VocalPy](https://github.com/vocalpy/vocalpy) — a core package for acoustic
-communication research in Python.
+A dark "scientific workstation" desktop app (PySide6) that **detects, classifies,
+and segments animal ultrasonic vocalizations (USVs)** and exports a **per-file CSV**,
+built on the [`gumadeiras/vocalpy`](https://github.com/gumadeiras/vocalpy) engine
+(inspired by [VocalMat](https://github.com/ahof1704/VocalMat)).
 
-![demo](docs/demo.png)
+Point it at 384 kHz mouse / rat / guinea-pig recordings, preview a band-limited
+spectrogram, run the full detect → classify → (segment) pipeline, and inspect every
+call as a class-colored box overlay + a results table, then export the stats CSV.
 
-## What it does
+![VocalPy USV Workbench — detection view](docs/demo.png)
 
-- **Load a folder** (recursively scanning sub-folders) of audio files (`.wav`,
-  `.flac`, `.ogg`, `.aiff`, `.cbin`, …), or add individual files / built-in VocalPy
-  example clips. Files are listed by path relative to their common ancestor.
-- **Visualize results in a gallery** — one click renders a spectrogram thumbnail for
-  every file in a reflowing grid of cards (with duration / sample-rate / channels);
-  click any card to open it in the interactive view.
-- Preview spectrograms interactively with three VocalPy backends
-  (`librosa-db`, `sat-multitaper`, `soundsig-spectro`), tuning compute params
-  (`n_fft`, `hop_length`, soundsig params) and display options (colormap, dynamic
-  range, frequency limits, waveform) live.
-- **Built for long, high-rate USV recordings** (e.g. 384 kHz, 15 min, ~700 MB): it
-  previews a *window* of the file (scrub / prev / next through the recording on an
-  absolute-time axis) instead of loading the whole thing, with a memory guard.
-- Batch-process the whole list into `.npz` spectrograms (`vocalpy.Spectrogram`)
-  and/or `.png` images, with an optional per-file second cap, progress, cancellation,
-  and a per-file log.
+> Real data above: female-mouse USVs (`31097_6_UVS_F`). Five calls detected in a
+> 7 s window; each box is colored by its predicted syllable class (`down_fm`, `flat`,
+> `step_down`, `up_fm`), the tiles summarize the detection, the cursor reads out
+> `time · frequency · power`, and the table + `*_stats.csv` carry the exact numbers.
 
-## Install
+---
 
-Requires Python 3.12 (VocalPy 0.11.0 needs >=3.12). A conda env is recommended.
+## ✨ What it does
+
+### 🎯 Real USV detection, not just a spectrogram
+Each file runs the upstream pipeline: chunk the audio → spectrogram-based candidate
+detection (adaptive threshold + morphology) → a MobileNetV2 **noise filter** removes
+false positives → an **11-class syllable classifier** (`chevron`, `complex`, `down_fm`,
+`flat`, `mult_steps`, `rev_chevron`, `short`, `step_down`, `step_up`, `two_steps`,
+`up_fm`) labels each call → optional **SqueakOut** neural segmentation masks.
+
+### 📄 A CSV for every file
+Results are written to `{name}_outputs/{name}_stats.csv` next to the audio (exactly
+like the upstream tool), one row per vocalization:
+
+```
+bin_number, start(s), end(s), duration(ms), interval(s), min_freq, max_freq,
+avg_freq, bandwidth, min_intensity, max_intensity, avg_intensity, bg_intensity,
+area(pixels), centroid_y, class_top1, class_top2
+```
+
+### 🖍️ See every call, inspect every number
+Detected calls are boxed on the spectrogram and colored by class. The **results
+table** lists start/end, duration, frequency range, bandwidth, and top-2 classes;
+click a row to jump the preview to that call. Live **tiles** show the count,
+calls/minute, mean duration, and dominant class. Hover anywhere for an exact
+`time · frequency · power-over-background` readout.
+
+### 🖼️ A gallery that finds the calls for you
+`Build gallery` renders a thumbnail per file, each **auto-seeking the most vocal
+window** in that recording (not its silent start). Click a card to open it.
+
+![Gallery](docs/gallery.png)
+
+### 🐘 Built for long, high-rate recordings
+384 kHz / 15-minute files are never loaded whole for preview: only the visible
+window is read and displayed with the same band-limited spectrogram the detector
+uses. Detection runs on a background thread with progress; the **Current window**
+scope gives fast, interactive detection while **Whole file** / **Detect all** run the
+full analysis and write the official CSVs.
+
+---
+
+## 🚀 Quickstart
+
+Requires **Python 3.12** and **Git LFS** (the pretrained model checkpoints are stored
+via LFS). A conda env is created from `environment.yaml`:
 
 ```bash
-conda create -y -n vocalpy python=3.12 pip
-conda activate vocalpy
-pip install -e .                # installs this app + vocalpy 0.11.0 + PySide6 + matplotlib
+cd vocalpy_gui
+conda env create -f environment.yaml          # creates the `UVS` env (torch CPU, etc.)
+conda activate UVS
+
+git -C vocalpy_engine lfs pull                 # fetch the model checkpoints (~84 MB)
+pip install -e ./vocalpy_engine --no-deps      # vendored gumadeiras/vocalpy engine
+pip install -e . --no-deps                     # this app → vocalpy-gui / vocalpy-cli
+
+vocalpy-gui                                    # launch the workbench
 ```
 
-`pip install -e .` provides the `vocalpy-gui` command and pulls the runtime
-dependencies (see `pyproject.toml`). To pin the exact set instead, use
-`pip install -r requirements.txt`.
+No install? `python run_vocalpy_gui.py` (it adds `vocalpy_engine/` to the path).
 
-> The three VocalPy 0.11.0 quirks noted below are worked around inside `vpgui`, so a
-> stock `pip`-installed `vocalpy==0.11.0` works. No fork of VocalPy is required.
+Then: **Add folder…** → pick recordings → select one → **Detect vocalizations**
+(scope *Current window* to explore, *Whole file* for the official CSV) →
+**Detect all → CSV** to batch the whole list.
 
-## Run
+![Landing screen](docs/landing.png)
+
+---
+
+## 💻 Command line
+
+Same engine as the GUI; writes one CSV per file.
 
 ```bash
-conda activate vocalpy
-vocalpy-gui                      # if installed with `pip install -e .`
-# or, with no install:
-python run_vocalpy_gui.py
-# or:
-python -m vpgui
+conda activate UVS
+
+# one file (mouse)
+vocalpy-cli /path/to/recording.wav
+
+# a whole folder (recurses), rat pipeline, with SqueakOut segmentation
+vocalpy-cli /path/to/folder -a rat --segmenter
+
+# no install
+python run_vocalpy_cli.py ../dataset/31097/6/31097_6_UVS_F_basal.wav
 ```
 
-Headless GUI smoke tests:
+Options: `-a/--animal {mouse,rat,guineapig}`, `-b/--bin-size`, `-lf/--lower-freq`,
+`-hf/--higher-freq` (Hz), `-t/--threads`, `--segmenter`, `-l/--validation`,
+`--no-recursive`. Run `vocalpy-cli -h` for details. The vendored engine also ships
+its own `vocalpy` command (see `vocalpy_engine/README.md`).
 
-```bash
-QT_QPA_PLATFORM=offscreen python run_vocalpy_gui.py   # constructs and exits via your own harness
+---
+
+## 🧩 Layout
+
 ```
-
-## Layout
-
-```
-vocalpy_gui/                # (MiMic repo root)
-├── vpgui/                  # this application
-│   ├── theme.py            # palette + global QSS (dark #0b1017 / cyan-teal)
-│   ├── spectro.py          # pure vocalpy logic (discovery, load, dispatch)
-│   ├── plotting.py         # matplotlib Figure rendering (thread-safe, no pyplot)
-│   ├── workers.py          # QThread workers (preview + batch)
-│   ├── widgets.py          # embedded canvas + navigation toolbar
+vocalpy_gui/
+├── vpgui/                  # this application (GUI + CLI front-end)
+│   ├── theme.py            # palette + global QSS (dark #0b1017 / cyan-teal, gradients)
+│   ├── engine.py           # adapter over the vendored vocalpy detection pipeline
+│   ├── spectro.py          # audio discovery + engine-consistent display spectrograms
+│   ├── plotting.py         # matplotlib rendering + class-colored detection overlays
+│   ├── workers.py          # QThread workers (preview, detect, batch-detect, gallery)
+│   ├── widgets.py          # metric tiles + interactive spectrogram canvas (crosshair)
+│   ├── results.py          # detections table (class-colored, clickable rows)
+│   ├── gallery.py          # reflowing grid of clickable thumbnail cards
 │   └── app.py              # MainWindow + main()
+├── vocalpy_engine/         # vendored gumadeiras/vocalpy (the detection engine + models)
+├── environment.yaml        # the `UVS` conda environment (torch CPU + full stack)
 ├── run_vocalpy_gui.py      # no-install launcher
-├── pyproject.toml          # `vocalpy-gui` entry point
+├── run_vocalpy_cli.py      # no-install CLI launcher
+├── pyproject.toml          # `vocalpy-gui` / `vocalpy-cli` entry points
 ├── GUI.md                  # visual + workflow design contract
 └── README.md
 ```
 
-## Notes
+## 🔧 Notes
 
-`soundsig-spectro` is dispatched directly (pre-scaled to int16, `scale=False`) to
-work around two real bugs in vocalpy 0.11.0 (`voc.spectrogram` mis-forwarding
-`n_fft`/`hop_length`, and `soundsig_spectro(scale=True)` referencing a missing
-`Sound.path`). See `vpgui/spectro.py` for details.
+- **Species presets** set the analysis band automatically (mouse 45–125 kHz, rat
+  18–125 kHz, guinea pig 0.25–20 kHz); untick *Auto band* to override.
+- **Denoise** (display only) subtracts each frequency's stationary background so
+  calls pop; it never affects detection or the CSV.
+- Detection needs numpy/scipy/opencv/scikit-image; **classification + SqueakOut**
+  additionally need torch/torchvision and the LFS checkpoints under
+  `vocalpy_engine/vocalpy/nn/pretrained/`.

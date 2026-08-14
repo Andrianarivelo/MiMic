@@ -1,0 +1,16 @@
+# --
+# -- default values if no parameters are provided by the user
+# --
+
+# -- break audio into bins for parallel processing (in seconds)
+bin_size: 60
+
+# -- number of threads to use simultaneously
+# -- -1 = thread count / 2
+threads: -1
+
+# -- verboso output
+verbose: True
+
+# -- save segmentation overlaid on spectrogram for manual verification
+validation: False

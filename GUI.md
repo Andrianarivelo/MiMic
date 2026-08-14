@@ -1,124 +1,116 @@
-# GUI.md — VocalPy Spectrogram Workbench (design contract)
+# GUI.md — VocalPy USV Workbench (design contract)
 
 This document is the visual + workflow contract for the PySide6 app in `vpgui/`.
 Keep it in sync with the code whenever the GUI structure or major workflow changes.
 
 ## Purpose
 
-A dark "scientific workstation" desktop app for **batch spectrogram processing**
-and **interactive spectrogram visualization**, built on the
-[VocalPy](https://github.com/vocalpy/vocalpy) library (v0.11.0).
+A dark "scientific workstation" desktop app that **detects, classifies, and
+segments animal ultrasonic vocalizations** and **exports a per-file CSV**, driving
+the vendored [`gumadeiras/vocalpy`](https://github.com/gumadeiras/vocalpy) engine
+(under `vocalpy_engine/`, inspired by VocalMat). It preview-renders band-limited
+spectrograms, runs the detect → classify → (segment) pipeline per file, overlays
+detected calls as class-colored boxes, and lists them in a results table.
 
 ## Visual style
 
-Matches the rest of the lab's tools: cyan / teal / blue accents on a near-black
-`#0b1017` background. All colors live in `vpgui/theme.py`; the matplotlib figures
-reuse the same constants so they blend into the surrounding widgets.
+Cyan / teal / blue accents on a near-black `#0b1017` background, with subtle
+gradients (header bar, primary/preset buttons, progress, slider) and metric-tile /
+chip classes. All colors live in `vpgui/theme.py`; `plotting.py` reuses them so the
+matplotlib figures blend in. Fonts prefer what is installed: UI `Ubuntu → Noto Sans
+→ DejaVu Sans`; mono `Ubuntu Mono → DejaVu Sans Mono`.
 
 | token | value | use |
 |---|---|---|
-| `BG` | `#0b1017` | window background |
-| `BG_PANEL` | `#0e1722` | group boxes |
-| `BG_ELEV` | `#13202d` | inputs, list rows |
+| `BG` / `BG_PANEL` / `BG_ELEV` | `#0b1017` / `#0e1722` / `#13202d` | window / panels / inputs |
 | `BG_PLOT` | `#0c141d` | matplotlib axes face |
-| `ACCENT` | `#19c8d6` | primary cyan (titles, focus, progress) |
-| `ACCENT_TEAL` | `#2dd4bf` | hover |
+| `ACCENT` / `ACCENT_TEAL` / `ACCENT_BLUE` | `#19c8d6` / `#2dd4bf` / `#38bdf8` | titles, focus, gradients |
 | `OK / WARN / ERROR` | green / amber / red | log + status levels |
+
+Detected-call boxes are colored per syllable class via `engine.CLASS_COLORS`.
 
 ## Layout
 
 ```
-┌ Header: "VocalPy Spectrogram Workbench" + subtitle ........ info label (file·sr·ch·window·shape) ┐
+┌ HeaderBar: [logo] "VocalPy USV Workbench" + subtitle ...... [FILE][SAMPLE RATE][DURATION] chips ┐
 ├───────────────┬────────────────────────────────────────────────────────────────────────────────┤
 │ LEFT (scroll) │ RIGHT (vertical splitter)                                                        │
-│  ┌Audio files┐│  ┌ Tabs: [ Spectrogram ] [ Gallery ] ────────────────────────────────────────┐  │
-│  │ list (rel ││  │  Spectrogram: nav toolbar · waveform · spectrogram (imshow) · dB colorbar  │  │
-│  │  paths)   ││  │  Gallery: Build gallery (N) · reflowing grid of clickable thumbnail cards  │  │
-│  │ add/folder││  └───────────────────────────────────────────────────────────────────────────┘  │
-│  │ example   ││  ┌ Batch processing ─────────────────────────────────────────────────────────┐  │
-│  │ remove/clr││  │  output folder + Browse                                                     │  │
-│  └───────────┘│  │  [x].npz  [x].png  dpi   Max s/file                                         │  │
-│  ┌Preview win┐│  │  [Process all (N)] [Cancel]  ▓▓▓ progress                                   │  │
-│  │ meta · sr ││  │  log (monospace, color-coded)                                               │  │
-│  │ whole-file││  └───────────────────────────────────────────────────────────────────────────┘  │
-│  │ start/len ││                                                                                   │
-│  │ scrub ◀▶  ││                                                                                   │
-│  └───────────┘│                                                                                   │
-│  ┌Method─────┐│                                                                                   │
-│  ┌Display────┐│                                                                                   │
-└───────────────┴────────────────────────────────────────────────────────────────────────────────┘
-Status bar: VocalPy version · transient messages
+│  ┌Audio files┐│  ┌ Tabs: [ Spectrogram ] [ Gallery ] ──────────────────────────────────────┐    │
+│  ┌Detection  ┐│  │  Tiles: [VOCALIZATIONS][CALLS/MIN][MEAN DUR][TOP CLASS][ CURSOR readout ]  │    │
+│  │ pipeline: ││  │  Spectrogram: waveform · band-limited spectrogram · class-colored boxes    │    │
+│  │ species,  ││  │  Gallery: Build gallery (N) · thumbnails auto-seeked to call-rich windows  │    │
+│  │ bin, band,││  └────────────────────────────────────────────────────────────────────────┘    │
+│  │ threads,  ││  ┌ Detection ───────────────────────────────────────────────────────────────┐   │
+│  │ segmenter ││  │  Scope [Current window|Whole file] [Detect] [Detect all→CSV] [Cancel] [Open]│   │
+│  └───────────┘│  │  progress · phase                                                          │   │
+│  ┌Preview win┐│  │  ┌ Detections table ─────────────┐  ┌ log (color-coded) ────────────────┐ │   │
+│  ┌Display────┐│  │  │ # start end dur freq bw class  │  │ pipeline messages · CSV path       │ │   │
+└───────────────┴──┴──┴────────────────────────────────┴──┴────────────────────────────────────┴───┘
+Status bar: engine version · transient messages
 ```
+
+The header carries a drawn "spectrogram-bars" logo and three live chips (FILE /
+SAMPLE RATE / DURATION). Above the spectrogram, a metric-tiles bar reports the
+detection summary + a **Cursor** tile that tracks the mouse.
 
 ## Controls
 
-**Audio files** — `Add files…`, `Add folder…` (recursively scans sub-folders when
-*Scan sub-folders recursively* is on), `Load built-in example ▾`, `Remove selected`,
-`Clear all`. Rows show each file **relative to the common ancestor** so nested files
-from a recursive scan are disambiguated (e.g. `31096/6/clip.wav`). Duplicates ignored.
+**Audio files** — `Add files…`, `Add folder…` (recursive toggle), `Remove selected`,
+`Clear all`. Rows show paths relative to the common ancestor.
 
-**Preview window** — for long / high-sample-rate recordings, only a window is read &
-shown: file metadata (`duration · kHz · ch · Nyquist`), `Preview whole file` toggle,
-`Start` / `Length` (s), a scrub slider, and `◀ prev` / `next ▶`. A memory guard refuses
-windows whose spectrogram would exceed ~1 GB and explains how to shrink it.
+**Detection pipeline** — `Species` (mouse / rat / guineapig; sets the default band),
+`Bin size` (parallel-processing chunk, s), `Auto band` + explicit `Band` (kHz)
+override, `Threads` (auto = cores/2), `SqueakOut neural segmentation`, `Save
+validation overlays`. These map onto the engine `args`.
 
-**Spectrogram method** (compute params — changing them recomputes the preview):
-`method` ∈ {`librosa-db`, `sat-multitaper`, `soundsig-spectro`}, `n_fft`, `hop_length`,
-soundsig-only rows shown only for that method, `to_mono`, `Update preview`.
+**Preview window** — `Preview whole file`, `Start` / `Length` (s, capped at 60 s),
+scrub slider, `◀ prev` / `next ▶`. Previews read only the visible window and compute
+the *same* band-limited spectrogram the detector uses (`spectro.compute_display_spectrogram`).
 
-**Display** (re-render only — never recompute): `colormap`, `dynamic range (dB)`,
-`show waveform`, `limit frequency axis` + range, `Save current figure…`.
+**Display** (re-render only) — `Colormap`, `Dynamic range (dB)`, `Denoise (subtract
+background)`, `Show waveform panel`, `Save current figure…`.
 
-**Gallery tab** — `Build gallery (N)` renders a small spectrogram thumbnail (first
-*thumb window* seconds) for every file in a `GalleryWorker`, progressively filling a
-reflowing grid of cards (thumbnail + relative path + `duration · kHz · ch`). Clicking a
-card selects that file and opens the interactive **Spectrogram** tab.
+**Detection** — `Scope` ∈ {Current window, Whole file}; `Detect vocalizations`
+(current file), `Detect all → CSV` (batch every file, whole-file), `Cancel`, `Open
+output`. A results **table** (`#`, start, end, dur ms, freq kHz, bandwidth, class,
+2nd) lists detections; clicking a row jumps the preview to that call. A color-coded
+log streams the pipeline's own messages and the written CSV path.
 
-**Batch processing**: output folder, `.npz` and/or `.png` outputs, PNG dpi,
-`Max s/file` (0 = whole file), `Process all files (N)`, `Cancel`, progress, color log.
+**Gallery** — `Build gallery` renders a thumbnail per file, each auto-seeked to its
+most vocal window (`spectro.find_active_window`). Click a card to open + jump there.
 
 ## Workflow contract
 
-1. Add files, **add a folder (recursively scanning sub-folders for audio)**, or load an example.
-2. Selecting a file reads its metadata cheaply, configures the preview window, and computes
-   a **windowed** spectrogram on a `PreviewWorker`. Preview requests are **coalesced** (only
-   the latest runs) and a **generation token** discards stale results.
-3. Scrub / `prev` / `next` to move the window through a long recording (axes show absolute
-   file time). Tune compute params → recompute; tune display params → instant re-render.
-4. `Build gallery` for a visual overview of every file; click any card to inspect it.
-5. Set an output folder, pick formats and an optional per-file cap, `Process all files` →
-   `BatchWorker` writes `<stem>.npz` and/or `<stem>.png` (disambiguating colliding stems),
-   reporting progress and honoring `Cancel`. Controls lock during the run; per-file errors
-   are isolated and logged.
+1. Add files or a folder; pick the species (sets the analysis band).
+2. Select a file → windowed, band-limited spectrogram preview (coalesced + generation
+   token so rapid scrubbing never piles up compute).
+3. `Detect vocalizations` — *Current window* writes a temp CSV and overlays results
+   fast; *Whole file* runs the full pipeline and writes `{name}_outputs/{name}_stats.csv`.
+   Detected calls are boxed by class, listed in the table, summarized in the tiles.
+4. Click a table row to inspect that call; hover for exact time/frequency/power.
+5. `Detect all → CSV` batches every file (whole-file) with progress + per-file logging.
+6. Or run headless: `vocalpy-cli PATH… [-a rat] [--segmenter]`.
 
 ## Architecture (one responsibility per module)
 
-| module | responsibility | Qt? | pyplot? |
-|---|---|---|---|
-| `theme.py` | palette + global QSS | no | no |
-| `spectro.py` | vocalpy logic: discovery, info, windowed load, dispatch | no | no |
-| `plotting.py` | Figure-based rendering + thumbnails (thread-safe) | no | no |
-| `workers.py` | `PreviewWorker`, `BatchWorker`, `GalleryWorker` (QThread) | yes | no |
-| `widgets.py` | `MplCanvas`, toolbar, `SpectrogramView` | yes | no |
-| `gallery.py` | `FlowLayout`, `ThumbnailCard`, `GalleryView` | yes | no |
-| `app.py` | `MainWindow` + `main()` | yes | no |
+| module | responsibility | Qt? |
+|---|---|---|
+| `theme.py` | palette + global QSS (gradients, tiles, chips) | no |
+| `engine.py` | adapter over vendored `vocalpy`: `DetectParams`, `run_detection`(+window), `Detection`, `summarize`, class colors | no |
+| `spectro.py` | audio discovery, windowed read, engine-consistent display spectrogram, denoise/limits, `find_active_window` | no |
+| `plotting.py` | Figure rendering + class-colored detection overlays (thread-safe) | no |
+| `workers.py` | `PreviewWorker`, `DetectWorker`, `BatchDetectWorker`, `GalleryWorker` | yes |
+| `widgets.py` | `MetricTile`/`MetricsBar`, `SpectrogramView` (hover crosshair) | yes |
+| `results.py` | `DetectionsTable` (class-colored, clickable rows) | yes |
+| `gallery.py` | `FlowLayout`, `ThumbnailCard`, `GalleryView` | yes |
+| `cli.py` | headless detect files/folders → per-file CSV | no |
+| `app.py` | `MainWindow` (header, pipeline controls, detection) + `main()` | yes |
 
-## Handling long / high-rate recordings
+## Engine + models
 
-The app is designed for ultrasonic vocalization (USV) data: e.g. 384 kHz mono, 15 min,
-~700 MB files. It never loads a whole such file for preview — `spectro.sound_info` reads
-metadata only, `read_sound_segment` reads just the visible window via soundfile's
-`start`/`frames`, the display decimates to ≤4000 columns (min/max envelope for the
-waveform), and a memory guard blocks any preview whose spectrogram would exceed ~1 GB.
-Batch can cap each file with *Max s/file*. Empty / truncated files are reported, not fatal.
-
-`pyplot` is never used so PNG rendering is safe on the batch thread (`Agg` Figure)
-while the live preview renders onto the embedded canvas Figure — both through
-`plotting.draw_spectrogram`.
-
-## VocalPy backend notes
-
-`soundsig-spectro` is dispatched directly (pre-scaled to int16, `scale=False`) to
-work around two real bugs in vocalpy 0.11.0: the `voc.spectrogram` convenience
-wrapper mis-forwards `n_fft`/`hop_length`, and `soundsig_spectro(scale=True)`
-references a non-existent `Sound.path`. See the docstring in `spectro.py`.
+The engine is vendored under `vocalpy_engine/` and installed editable as `vocalpy`.
+Detection needs numpy/scipy/opencv/scikit-image; classification (MobileNetV2 noise +
+11-class syllable models) and SqueakOut segmentation need torch/torchvision and the
+Git-LFS checkpoints in `vocalpy_engine/vocalpy/nn/pretrained/` (`noise_model.pth.tar`,
+`class_model.pth.tar`, `segment_model.ckpt`). The `UVS` conda env (`environment.yaml`)
+provides the full stack (torch CPU build).

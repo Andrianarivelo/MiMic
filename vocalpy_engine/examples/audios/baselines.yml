@@ -1,0 +1,5 @@
+fixtures:
+  - name: mouse_1
+    species: mouse
+  - name: mouse_2
+    species: mouse

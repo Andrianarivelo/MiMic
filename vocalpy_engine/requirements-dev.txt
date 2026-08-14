@@ -1,0 +1,9 @@
+-c constraints/dev.txt
+-e .
+pytest
+pytest-cov
+sphinx
+furo
+myst-parser
+jupyterlab
+notebook

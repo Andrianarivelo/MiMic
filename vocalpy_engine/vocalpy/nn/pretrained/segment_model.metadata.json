@@ -1,0 +1,24 @@
+{
+  "network_type": "segment",
+  "filename": "segment_model.ckpt",
+  "architecture": "squeakout",
+  "num_classes": 1,
+  "classes": [
+    "vocal_mask"
+  ],
+  "input_shape": [1, 512, 512],
+  "checkpoint_keys": ["state_dict"],
+  "prediction_type": "logits",
+  "default_threshold": 0.51,
+  "sha256": "3bd430ca00c8c5a9ac81816c351be34345b290294fb680dc3565be648d142199",
+  "storage": "git-lfs",
+  "source": "Bundled SqueakOut checkpoint",
+  "source_version": "2a77f0c24d34197b3fb56efa15433a1851dcee3b",
+  "repo_history": {
+    "source_repo": "https://github.com/gumadeiras/squeakout",
+    "source_repo_commit": "2a77f0c24d34197b3fb56efa15433a1851dcee3b",
+    "source_repo_commit_at": "2026-04-10T15:50:15-04:00",
+    "source_repo_commit_subject": "docs: add environment and usage guide"
+  },
+  "notes": "Autoencoder-based segmentation checkpoint for per-vocal spectrogram crops."
+}

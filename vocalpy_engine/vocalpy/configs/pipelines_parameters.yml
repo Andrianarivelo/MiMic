@@ -1,0 +1,53 @@
+# --
+# -- default values if no parameters are provided by the user
+# --
+
+pipelines:
+  generic:
+    identifier: False
+    classifier: False
+  mouse:
+    identifier: True
+    classifier: True
+    segmenter: False
+    segmentation_model_path:
+    min_contrast_db: 3.0
+    nfft: 1024
+    window_type: "hamming"
+    window_size: 256
+    noverlap: 128
+    lower_frequency_cutoff: 45000
+    higher_frequency_cutoff: 125000
+    # legacy duration limits are expressed in spectrogram frames, not ms
+    min_vocal_duration_frames: 5
+    max_vocal_duration_frames: 250
+  rat:
+    identifier: True
+    classifier: True
+    segmenter: False
+    segmentation_model_path:
+    min_contrast_db: 3.0
+    nfft: 1024
+    window_type: "hamming"
+    window_size: 256
+    noverlap: 128
+    lower_frequency_cutoff: 18000
+    higher_frequency_cutoff: 125000
+    # legacy duration limits are expressed in spectrogram frames, not ms
+    min_vocal_duration_frames: 5
+    max_vocal_duration_frames: 750
+  guineapig:
+    identifier: True
+    classifier: False
+    segmenter: False
+    segmentation_model_path:
+    min_contrast_db: 3.0
+    nfft: 1024
+    window_type: "barthann"
+    window_size: 512
+    noverlap: 256
+    lower_frequency_cutoff: 250
+    higher_frequency_cutoff: 20000
+    # legacy duration limits are expressed in spectrogram frames, not ms
+    min_vocal_duration_frames: 5
+    max_vocal_duration_frames: 3000
