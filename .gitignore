@@ -13,6 +13,12 @@ dist/
 vocalpy_output/
 *.npz
 scripts/calls_meta.csv
+AGENT_MEMORY_MiMic.md
+scripts/lgdel_detection_batch.log
+scripts/lgdel_detection_batch.err.log
+scripts/lgdel_detection_batch.pid
+scripts/lgdel_detection_summary.csv
+lgdel_usv_analysis/
 
 # Environments / editors
 .venv/
