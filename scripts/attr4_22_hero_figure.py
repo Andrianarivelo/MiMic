@@ -28,6 +28,12 @@ What changes, and why
                    and the behaviour state ribbon drawn on the same time axis. The
                    quantitative claim is grounded in one visible episode.
 
+(e) SOCIAL STATE   animal-level call number and animal-median syllable duration
+                   during active investigation, passive investigation and
+                   non-social periods. Diamonds carry animal-bootstrap 95% CIs;
+                   animals with no duration because they made no calls are
+                   explicitly marked rather than assigned a zero duration.
+
 The validation panels of the original (LOSO AUC, split-half reliability) are
 demoted to a compact stat strip: they are reassurance, not the message.
 
@@ -36,7 +42,8 @@ Run
     python scripts/attr4_22_hero_figure.py
 
 Outputs `v4_fig1_calls_by_genotype.{png,svg,pdf}`, a visual benchmark against
-the pooled-count version, and the mixed-ANOVA/post-hoc statistical tables.
+the pooled-count version, a standalone `v4_fig1_social_investigation_panel`,
+and the mixed-ANOVA/post-hoc statistical tables.
 """
 from __future__ import annotations
 
@@ -82,6 +89,15 @@ COMPOSITE = "ACTIVEsocial"
 RES_INVESTIGATE = ("m1_nose2anogenital", "m1_following")
 PART_RETREAT = ("m2_withdrawal_from_partner", "m2_escape",
                 "m2_withdrawal_after_contact")
+
+# Mutually exclusive social-investigation states for panel e. Active means the
+# resident is the investigator. Passive means its partner is the investigator,
+# or the pair is in mutual contact, while the resident is not actively acting.
+SOCIAL_INVESTIGATION = ("nose2anogenital", "nose2body", "oriented_toward",
+                        "following", "chasing", "approach")
+SOCIAL_MUTUAL = ("nose2nose", "sidebyside", "sidereside", "fighting")
+SOCIAL_STATES = ("active social investigation", "passive social investigation",
+                 "non-social")
 
 # Six directional behaviours for the actor-vs-target dumbbells
 DIRECTIONAL = ("nose2anogenital", "nose2body", "oriented_toward",
@@ -445,6 +461,183 @@ def behaviour_call_count_statistics(
     return long, omnibus, posthoc, dropped, order
 
 
+def mixed_anova_log_counts(Y_raw: np.ndarray, groups: np.ndarray,
+                           factor_name: str) -> dict:
+    """Two-way mixed ANOVA for animal x repeated-factor count matrices."""
+    Y = np.log1p(np.asarray(Y_raw, float))
+    groups = np.asarray(groups)
+    levels = ("WT", "HET")
+    n, k = Y.shape
+    grand = float(Y.mean())
+    factor_mean = Y.mean(axis=0)
+    animal_mean = Y.mean(axis=1)
+    group_mean = {g: float(Y[groups == g].mean()) for g in levels}
+    group_factor_mean = {g: Y[groups == g].mean(axis=0) for g in levels}
+    group_n = {g: int(np.sum(groups == g)) for g in levels}
+
+    ss_group = k * sum(group_n[g] * (group_mean[g] - grand) ** 2 for g in levels)
+    ss_animal_group = k * sum(
+        (animal_mean[i] - group_mean[groups[i]]) ** 2 for i in range(n))
+    ss_factor = n * np.square(factor_mean - grand).sum()
+    ss_interaction = sum(
+        group_n[g] * np.square(group_factor_mean[g] - group_mean[g]
+                               - factor_mean + grand).sum() for g in levels)
+    ss_error = sum(
+        np.square(Y[i] - animal_mean[i] - group_factor_mean[groups[i]]
+                  + group_mean[groups[i]]).sum() for i in range(n))
+    df_factor = k - 1
+    df_animal_group = n - len(levels)
+    df_error = df_factor * df_animal_group
+    ms_error = ss_error / df_error
+    f_group = ss_group / (ss_animal_group / df_animal_group)
+    f_factor = (ss_factor / df_factor) / ms_error
+    f_interaction = (ss_interaction / df_factor) / ms_error
+
+    residual = np.vstack([
+        Y[i] - animal_mean[i] - group_factor_mean[groups[i]] + group_mean[groups[i]]
+        for i in range(n)
+    ])
+    covariance = np.cov(residual, rowvar=False, ddof=1)
+    centering = np.eye(k) - np.ones((k, k)) / k
+    centered_cov = centering @ covariance @ centering
+    epsilon = float(np.trace(centered_cov) ** 2 /
+                    (df_factor * np.trace(centered_cov @ centered_cov)))
+    epsilon = float(np.clip(epsilon, 1 / df_factor, 1.0))
+    df_factor_gg, df_error_gg = epsilon * df_factor, epsilon * df_error
+    return {
+        "test": f"genotype x {factor_name} mixed ANOVA on log1p animal counts",
+        "experimental_unit": "animal", "n_animals": n,
+        "n_WT": group_n["WT"], "n_HET": group_n["HET"],
+        "greenhouse_geisser_epsilon": epsilon,
+        "effects": {
+            "genotype": {"F": float(f_group), "df1": 1.0,
+                         "df2": float(df_animal_group),
+                         "p": float(stats.f.sf(f_group, 1, df_animal_group))},
+            factor_name: {"F": float(f_factor), "df1": df_factor_gg,
+                          "df2": df_error_gg,
+                          "p": float(stats.f.sf(f_factor, df_factor_gg,
+                                                df_error_gg))},
+            f"genotype_x_{factor_name}": {
+                "F": float(f_interaction), "df1": df_factor_gg,
+                "df2": df_error_gg,
+                "p": float(stats.f.sf(f_interaction, df_factor_gg, df_error_gg)),
+            },
+        },
+    }
+
+
+def social_investigation_data(bins: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Animal-level call count and median duration in three social states."""
+    b = bins[(bins["t"] >= PARTNER_T0) & (bins["t"] < A.SESSION_END_S)].copy()
+    b["animal_id"] = b["animal_id"].astype(str)
+    active = np.logical_or.reduce(
+        [b[f"m1_{flag}"].to_numpy() > 0.5 for flag in SOCIAL_INVESTIGATION])
+    partner = np.logical_or.reduce(
+        [b[f"m2_{flag}"].to_numpy() > 0.5 for flag in SOCIAL_INVESTIGATION])
+    mutual = np.logical_or.reduce(
+        [b[f"m1_{flag}"].to_numpy() > 0.5 for flag in SOCIAL_MUTUAL])
+    b["social_state"] = np.where(
+        active, SOCIAL_STATES[0], np.where(partner | mutual, SOCIAL_STATES[1],
+                                           SOCIAL_STATES[2]))
+
+    calls = pd.read_csv(OUT / "call_features.csv", low_memory=False)
+    calls = calls[(calls["start_s"] >= PARTNER_T0)
+                  & (calls["start_s"] < A.SESSION_END_S)].copy()
+    calls["animal_id"] = calls["animal_id"].astype(str)
+    calls["bin"] = np.floor(calls["start_s"] / BIN_S).astype(int)
+    state_map = b.set_index(["animal_id", "bin"])["social_state"]
+    calls = calls.merge(state_map.rename("social_state"),
+                        on=["animal_id", "bin"], how="left")
+    if calls["social_state"].isna().any():
+        raise ValueError("Some calls could not be mapped to a social-state bin")
+
+    rows = []
+    animals = (b[["animal_id", "genotype"]].drop_duplicates()
+               .sort_values("animal_id"))
+    for animal, genotype in animals.itertuples(index=False):
+        for state in SOCIAL_STATES:
+            c = calls[(calls["animal_id"] == animal)
+                      & (calls["social_state"] == state)]
+            rows.append({
+                "animal_id": animal, "genotype": genotype, "state": state,
+                "call_count": int(len(c)),
+                "median_duration_ms": float(c["rf_dur_ms"].median())
+                if len(c) else np.nan,
+                "n_calls_for_duration": int(c["rf_dur_ms"].notna().sum()),
+            })
+    summary = pd.DataFrame(rows)
+
+    wide = summary.pivot(index=["animal_id", "genotype"], columns="state",
+                         values="call_count").reindex(columns=SOCIAL_STATES)
+    groups = wide.index.get_level_values("genotype").to_numpy()
+    count_anova = mixed_anova_log_counts(wide.to_numpy(float), groups,
+                                         "social_state")
+    count_tests = []
+    duration_tests = []
+    for state in SOCIAL_STATES:
+        sub = summary[summary["state"] == state]
+        wt_count = np.log1p(sub.loc[sub["genotype"] == "WT", "call_count"])
+        het_count = np.log1p(sub.loc[sub["genotype"] == "HET", "call_count"])
+        result = stats.ttest_ind(wt_count, het_count, equal_var=False)
+        count_tests.append({
+            "state": state, "test": "Welch t-test on log1p animal counts",
+            "t": float(result.statistic), "df": float(result.df),
+            "p_raw": float(result.pvalue),
+            "p_bonferroni": min(float(result.pvalue) * len(SOCIAL_STATES), 1.0),
+        })
+        wt_dur = np.log(sub.loc[sub["genotype"] == "WT",
+                                "median_duration_ms"].dropna())
+        het_dur = np.log(sub.loc[sub["genotype"] == "HET",
+                                 "median_duration_ms"].dropna())
+        result = stats.ttest_ind(wt_dur, het_dur, equal_var=False)
+        duration_tests.append({
+            "state": state, "test": "Welch t-test on log animal-median duration",
+            "n_WT": int(len(wt_dur)), "n_HET": int(len(het_dur)),
+            "t": float(result.statistic), "df": float(result.df),
+            "p_raw": float(result.pvalue),
+            "p_bonferroni": min(float(result.pvalue) * len(SOCIAL_STATES), 1.0),
+        })
+    state_calls = calls.groupby(["genotype", "social_state"]).size()
+    estimates = []
+    for state_i, state in enumerate(SOCIAL_STATES):
+        for genotype_i, genotype in enumerate(("WT", "HET")):
+            sub = summary[(summary["state"] == state)
+                          & (summary["genotype"] == genotype)]
+            c_med, c_lo, c_hi = _bootstrap_median_ci(
+                sub["call_count"].to_numpy(float),
+                SEED + 100 + state_i * 10 + genotype_i)
+            d_med, d_lo, d_hi = _bootstrap_median_ci(
+                sub["median_duration_ms"].to_numpy(float),
+                SEED + 200 + state_i * 10 + genotype_i)
+            estimates.append({
+                "state": state, "genotype": genotype,
+                "n_animals_count": int(len(sub)),
+                "call_count_median": c_med, "call_count_ci_low": c_lo,
+                "call_count_ci_high": c_hi,
+                "n_animals_duration": int(sub["median_duration_ms"].notna().sum()),
+                "duration_median_ms": d_med, "duration_ci_low_ms": d_lo,
+                "duration_ci_high_ms": d_hi,
+            })
+    statistics = {
+        "definitions": {
+            SOCIAL_STATES[0]: "resident performs an investigation behavior",
+            SOCIAL_STATES[1]: ("partner investigates or mutual contact occurs, "
+                               "while resident is not actively investigating"),
+            SOCIAL_STATES[2]: "neither active nor passive social investigation",
+        },
+        "n_mapped_calls": int(len(calls)),
+        "calls_by_genotype_and_state": {
+            f"{g}|{s}": int(state_calls.loc[(g, s)])
+            for g, s in state_calls.index
+        },
+        "count_anova": count_anova,
+        "count_genotype_posthoc": count_tests,
+        "duration_genotype_posthoc": duration_tests,
+        "animal_bootstrap_median_estimates": estimates,
+    }
+    return summary, statistics
+
+
 def action_reaction(S: dict, rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
     """2 x 2 raw call rate: resident investigating x partner retreating.
 
@@ -726,6 +919,138 @@ def panel_call_counts(ax, counts: pd.DataFrame, omnibus: dict,
                  loc="left", color=C_INK)
 
 
+def _vertical_tie_jitter(values: np.ndarray, center: float) -> np.ndarray:
+    """Deterministic horizontal spreading for tied values in a vertical strip."""
+    values = np.asarray(values, float)
+    x = np.full(len(values), center)
+    finite = np.isfinite(values)
+    for value in np.unique(values[finite]):
+        idx = np.flatnonzero(finite & (values == value))
+        if len(idx) > 1:
+            x[idx] += np.linspace(-0.065, 0.065, len(idx))
+    singles = [i for i in np.flatnonzero(finite)
+               if np.sum(values[finite] == values[i]) == 1]
+    if singles:
+        x[singles] += np.linspace(-0.045, 0.045, len(singles))
+    return x
+
+
+def _bootstrap_median_ci(values: np.ndarray, seed: int) -> tuple[float, float, float]:
+    """Median and animal-bootstrap percentile 95% confidence interval."""
+    values = np.asarray(values, float)
+    values = values[np.isfinite(values)]
+    if not len(values):
+        return np.nan, np.nan, np.nan
+    rng = np.random.default_rng(seed)
+    indices = rng.integers(0, len(values), size=(N_BOOT, len(values)))
+    boot = np.median(values[indices], axis=1)
+    lo, hi = np.percentile(boot, [2.5, 97.5])
+    return float(np.median(values)), float(lo), float(hi)
+
+
+def panel_social_investigation(ax_count, ax_duration, summary: pd.DataFrame,
+                               statistics: dict) -> None:
+    """(e) Animal-level call abundance and syllable duration by social state."""
+    short = {SOCIAL_STATES[0]: "active social\ninvestigation",
+             SOCIAL_STATES[1]: "passive social\ninvestigation",
+             SOCIAL_STATES[2]: "non-social"}
+    colors = {"WT": C_ACCENT, "HET": "#dc6b35"}
+    offsets = {"WT": -0.16, "HET": 0.16}
+    x_base = np.arange(len(SOCIAL_STATES))
+
+    def p_stars(p: float) -> str:
+        return "***" if p < 0.001 else "**" if p < 0.01 else (
+            "*" if p < 0.05 else "ns")
+
+    count_tests = {r["state"]: r for r in statistics["count_genotype_posthoc"]}
+    duration_tests = {r["state"]: r
+                      for r in statistics["duration_genotype_posthoc"]}
+    for state_i, state in enumerate(SOCIAL_STATES):
+        for genotype_i, genotype in enumerate(("WT", "HET")):
+            sub = summary[(summary["state"] == state)
+                          & (summary["genotype"] == genotype)]
+            center = state_i + offsets[genotype]
+            counts = sub["call_count"].to_numpy(float)
+            ax_count.scatter(_vertical_tie_jitter(counts, center), counts,
+                             s=24, color=colors[genotype], edgecolor=C_SURF,
+                             linewidth=0.5, alpha=0.88, zorder=3)
+            med, lo, hi = _bootstrap_median_ci(
+                counts, SEED + 100 + state_i * 10 + genotype_i)
+            ax_count.errorbar(center, med, yerr=[[med - lo], [hi - med]],
+                              fmt="D", ms=5.2, color=colors[genotype],
+                              mfc="white", mec=colors[genotype], mew=1.2,
+                              lw=1.5, capsize=3, zorder=5)
+
+            durations = sub["median_duration_ms"].to_numpy(float)
+            valid = np.isfinite(durations)
+            x_duration = _vertical_tie_jitter(durations, center)
+            ax_duration.scatter(x_duration[valid], durations[valid], s=24,
+                                color=colors[genotype], edgecolor=C_SURF,
+                                linewidth=0.5, alpha=0.88, zorder=3)
+            missing_n = int((~valid).sum())
+            if missing_n:
+                missing_x = center + np.linspace(-0.045, 0.045, missing_n)
+                ax_duration.scatter(missing_x, np.zeros(missing_n), marker="x",
+                                    s=25, color=colors[genotype], linewidth=1.2,
+                                    zorder=4)
+            med, lo, hi = _bootstrap_median_ci(
+                durations, SEED + 200 + state_i * 10 + genotype_i)
+            ax_duration.errorbar(center, med, yerr=[[med - lo], [hi - med]],
+                                 fmt="D", ms=5.2, color=colors[genotype],
+                                 mfc="white", mec=colors[genotype], mew=1.2,
+                                 lw=1.5, capsize=3, zorder=5)
+            ax_duration.text(center, -1.2, f"n={valid.sum()}", ha="center",
+                             va="top", fontsize=6.5, color=colors[genotype])
+
+        count_max = summary.loc[summary["state"] == state, "call_count"].max()
+        ax_count.text(state_i, max(1.0, count_max * 1.23),
+                      p_stars(count_tests[state]["p_bonferroni"]),
+                      ha="center", va="bottom", fontsize=9, fontweight="bold")
+        duration_max = summary.loc[summary["state"] == state,
+                                   "median_duration_ms"].max()
+        ax_duration.text(state_i, min(93.0, duration_max + 4.0),
+                         p_stars(duration_tests[state]["p_bonferroni"]),
+                         ha="center", va="bottom", fontsize=9,
+                         fontweight="bold")
+
+    for ax in (ax_count, ax_duration):
+        ax.set_xticks(x_base, [short[s] for s in SOCIAL_STATES], fontsize=8)
+        ax.set_xlim(-0.55, len(SOCIAL_STATES) - 0.45)
+        ax.grid(axis="x", visible=False)
+    ax_count.set_yscale("symlog", linthresh=1.0, linscale=0.55, base=10)
+    ax_count.set_yticks([0, 1, 3, 10, 30, 100, 300],
+                        ["0", "1", "3", "10", "30", "100", "300"])
+    ax_count.set_ylim(-0.15, 520)
+    ax_count.set_ylabel("calls per animal")
+    interaction = statistics["count_anova"]["effects"][
+        "genotype_x_social_state"]
+    ax_count.set_title("e1  Call number: genotype x state interaction\n"
+                       f"      F({interaction['df1']:.2f}, {interaction['df2']:.1f}) "
+                       f"= {interaction['F']:.2f}, p = {interaction['p']:.2e}",
+                       loc="left")
+    ax_count.text(0.01, 0.98, "WT-HET tests: Bonferroni * p<.05, ** p<.01, *** p<.001",
+                  transform=ax_count.transAxes, ha="left", va="top",
+                  fontsize=6.7, color=C_SEC)
+
+    ax_duration.set_ylim(-4.5, 100)
+    ax_duration.set_ylabel("animal-median call duration (ms)")
+    ax_duration.set_title("e2  Calls lengthen selectively during active investigation",
+                          loc="left")
+    ax_duration.text(0.99, 0.98,
+                     "diamond and bars = median and animal-bootstrap 95% CI\n"
+                     "x at 0 = animal made no calls in that state",
+                     transform=ax_duration.transAxes, ha="right", va="top",
+                     fontsize=6.7, color=C_SEC)
+    ax_count.legend(handles=[
+        plt.Line2D([], [], marker="o", ls="none", color=colors["WT"],
+                   label="WT, n=12 animals"),
+        plt.Line2D([], [], marker="o", ls="none", color=colors["HET"],
+                   label="HET, n=12 animals"),
+        plt.Line2D([], [], marker="D", ls="-", color=C_SEC, mfc="white",
+                   label="median [95% CI]"),
+    ], frameon=False, fontsize=7.2, loc="lower left", ncol=3)
+
+
 def panel_matrix(ax, tab: pd.DataFrame, st: dict) -> None:
     """(b) Action x reaction: the resident's move and the partner's answer."""
     ax.set_axis_off()
@@ -966,8 +1291,21 @@ def panel_stats(ax, pred: dict, val: dict, hero: dict) -> None:
 # --------------------------------------------------------------------------- #
 # Figure                                                                      #
 # --------------------------------------------------------------------------- #
+def build_social_panel_figure(summary: pd.DataFrame,
+                              statistics: dict) -> plt.Figure:
+    """Standalone, publication-sized rendering of the new social-state panel."""
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.25),
+                             gridspec_kw={"wspace": 0.25})
+    panel_social_investigation(axes[0], axes[1], summary, statistics)
+    fig.suptitle("Call abundance and duration across social-investigation states",
+                 y=1.01, fontsize=14)
+    fig.subplots_adjust(left=0.075, right=0.985, top=0.82, bottom=0.20)
+    return fig
+
+
 def build(df, fold, enr, tab, st, pred, val, counts, omnibus, pairwise, dropped,
-          order, panel_a: str = "multiplier"):
+          order, social_summary, social_statistics,
+          panel_a: str = "multiplier"):
     """Assemble the figure.
 
     `panel_a` selects the left-hand hero panel and nothing else, so the two
@@ -975,9 +1313,18 @@ def build(df, fold, enr, tab, st, pred, val, counts, omnibus, pairwise, dropped,
     like: "multiplier" is the movement-adjusted rate ratio with bootstrap CIs,
     "counts" is the per-session box-and-strip of raw call counts.
     """
-    fig = plt.figure(figsize=(17.2, 9.6))
-    outer = fig.add_gridspec(1, 2, width_ratios=[1.00, 1.20], wspace=0.15,
-                             left=0.052, right=0.986, top=0.876, bottom=0.062)
+    include_social = panel_a == "counts"
+    fig = plt.figure(figsize=(17.2, 12.4 if include_social else 9.6))
+    if include_social:
+        master = fig.add_gridspec(2, 1, height_ratios=[3.35, 1.0], hspace=0.19,
+                                  left=0.052, right=0.986, top=0.905,
+                                  bottom=0.055)
+        outer = master[0, 0].subgridspec(1, 2, width_ratios=[1.00, 1.20],
+                                         wspace=0.15)
+    else:
+        outer = fig.add_gridspec(1, 2, width_ratios=[1.00, 1.20], wspace=0.15,
+                                 left=0.052, right=0.986, top=0.876,
+                                 bottom=0.062)
     left = outer[0, 0].subgridspec(2, 1, height_ratios=[7.6, 1.0], hspace=0.20)
     right = outer[0, 1].subgridspec(3, 1, height_ratios=[2.55, 1.95, 2.10],
                                     hspace=0.32)
@@ -1006,9 +1353,16 @@ def build(df, fold, enr, tab, st, pred, val, counts, omnibus, pairwise, dropped,
     ax_spec = fig.add_subplot(right[2, 0])
     panel_exemplar(ax_frames, ax_spec, df)
 
+    if include_social:
+        social_grid = master[1, 0].subgridspec(1, 2, wspace=0.22)
+        panel_social_investigation(fig.add_subplot(social_grid[0, 0]),
+                                   fig.add_subplot(social_grid[0, 1]),
+                                   social_summary, social_statistics)
+
     fig.suptitle("Vocalisations track active pursuit: calling peaks while the "
-                 "resident is sniffing and following its partner", y=0.965)
-    fig.text(0.05, 0.925,
+                 "resident is sniffing and following its partner",
+                 y=0.973 if include_social else 0.965)
+    fig.text(0.05, 0.942 if include_social else 0.925,
              f"{val['n_calls_partner']:,} resident-attributed calls, "
              "N = 24 animals (12 WT, 12 HET), one session per animal, 100 ms bins.  Panel a "
              + note, fontsize=8.4, color=C_SEC, ha="left", va="center")
@@ -1061,6 +1415,14 @@ def main():
     print(pairwise.sort_values("p_bonferroni").head(10)
           .round(5).to_string(index=False))
 
+    print("\nsocial-investigation call count and duration ...", flush=True)
+    social_summary, social_statistics = social_investigation_data(df)
+    social_summary.to_csv(OUT / "hero_social_investigation_calls.csv", index=False)
+    with open(OUT / "hero_social_investigation_statistics.json", "w",
+              encoding="utf-8") as f:
+        json.dump(social_statistics, f, indent=2)
+    print(json.dumps(social_statistics, indent=2))
+
     print("\naction x reaction ...", flush=True)
     tab, st = action_reaction(S, rng)
     tab.to_csv(OUT / "hero_action_reaction.csv")
@@ -1074,9 +1436,11 @@ def main():
     # Both variants are rendered from the same run so the benchmark below never
     # compares a fresh figure against a stale PNG left over from an earlier one.
     args = (df, fold, enr, tab, st, pred, val, counts, omnibus, pairwise,
-            dropped, order)
+            dropped, order, social_summary, social_statistics)
     savefig(build(*args, panel_a="multiplier"), "v4_fig1_hero")
     savefig(build(*args, panel_a="counts"), "v4_fig1_calls_by_genotype")
+    savefig(build_social_panel_figure(social_summary, social_statistics),
+            "v4_fig1_social_investigation_panel")
     save_benchmark("v4_fig1_calls_boxstrip", "v4_fig1_calls_by_genotype")
 
 
