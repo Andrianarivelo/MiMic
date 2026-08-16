@@ -601,12 +601,41 @@ def panel_hero(ax, fold: pd.DataFrame, enr: pd.DataFrame) -> dict:
     return {"order": order, "dropped": dropped}
 
 
+def visible_tie_jitter(values: np.ndarray, y_center: float) -> tuple[np.ndarray, np.ndarray]:
+    """Place tied integer counts on a compact grid so every animal is visible.
+
+    The boxplot always receives the exact counts. Only the displayed point
+    coordinates are displaced. Positive counts use symmetric horizontal jitter;
+    zero counts use small one-sided jitter to avoid implying negative counts.
+    """
+    values = np.asarray(values, float)
+    x_plot = values.copy()
+    y_plot = np.full(len(values), y_center, float)
+    for value in np.unique(values):
+        indices = np.flatnonzero(values == value)
+        n_tied = len(indices)
+        n_columns = min(4, int(np.ceil(np.sqrt(n_tied))))
+        n_rows = int(np.ceil(n_tied / n_columns))
+        for rank, index in enumerate(indices):
+            row, column = divmod(rank, n_columns)
+            used_columns = min(n_columns, n_tied - row * n_columns)
+            column_offset = column - (used_columns - 1) / 2
+            row_offset = row - (n_rows - 1) / 2
+            y_plot[index] += row_offset * 0.105
+            if value == 0:
+                x_plot[index] = column * 0.048
+            elif value <= 1:
+                x_plot[index] = value + column_offset * 0.048
+            else:
+                x_plot[index] = value * np.exp(column_offset * 0.075)
+    return x_plot, y_plot
+
+
 def panel_call_counts(ax, counts: pd.DataFrame, omnibus: dict,
                       pairwise: pd.DataFrame, order: list[str]) -> None:
     """(a) WT versus HET animal-level call-count box-and-strip plot."""
     y = np.arange(len(order))[::-1]
     genotype_style = {"WT": (C_ACCENT, 0.18), "HET": ("#dc6b35", -0.18)}
-    rng = np.random.default_rng(SEED + 17)
     max_count = 0.0
     for genotype, (color, offset) in genotype_style.items():
         values = [counts.loc[(counts["behavior"] == b)
@@ -623,8 +652,8 @@ def panel_call_counts(ax, counts: pd.DataFrame, omnibus: dict,
             box.set_edgecolor(color)
             box.set_linewidth(1.05)
         for yi, vals in zip(y + offset, values):
-            jitter = rng.uniform(-0.075, 0.075, len(vals))
-            ax.scatter(vals, yi + jitter, s=27, color=color, edgecolor=C_SURF,
+            x_plot, y_plot = visible_tie_jitter(vals, yi)
+            ax.scatter(x_plot, y_plot, s=24, color=color, edgecolor=C_SURF,
                        linewidth=0.5, alpha=0.88, zorder=4)
 
     ax.set_xscale("symlog", linthresh=1.0, linscale=0.55, base=10)
@@ -638,7 +667,8 @@ def panel_call_counts(ax, counts: pd.DataFrame, omnibus: dict,
             lab.set_color(C_INK)
     # Extra headroom keeps the ANOVA summary separate from the first data row.
     ax.set_ylim(-0.85, len(order) + 0.65)
-    ax.set_xlabel("calls per 10-minute animal session (each dot is one animal; log-like axis)")
+    ax.set_xlabel("calls per 10-minute animal session (12 dots per genotype; "
+                  "tied counts use slight 2D jitter; log-like axis)")
     ax.grid(axis="y", visible=False)
     ax.legend(handles=[
         plt.Line2D([], [], marker="o", ls="none", color=C_ACCENT, label="WT, n = 12"),
