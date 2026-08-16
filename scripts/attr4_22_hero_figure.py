@@ -7,12 +7,12 @@ bars that dominated the original panel (a).
 
 What changes, and why
 ---------------------
-(a) CALL COUNTS    nine pre-filtered behaviours are shown as horizontal box-and-
-                   strip distributions of per-session call counts. Sessions are
-                   the repeated unit. Inference uses a one-way repeated-measures
-                   ANOVA followed by all paired t-tests with Bonferroni correction.
-                   The complete pairwise table is exported even when corrected
-                   significance brackets are absent.
+(a) CALL COUNTS    seven atomic behaviours are shown as horizontal WT versus HET
+                   box-and-strip distributions. One animal is one independent
+                   observation (12 WT and 12 HET). Inference uses a two-way mixed
+                   ANOVA on log1p counts, with genotype between animals and
+                   behaviour repeated within animals, followed by Bonferroni-
+                   corrected simple effects and within-genotype comparisons.
 
 (b) ACTION x REACTION  old panels (a) and (b) are merged into one 2 x 2 contingency
                    of *raw* call rate: resident investigating (anogenital sniff or
@@ -35,8 +35,8 @@ Run
 ---
     python scripts/attr4_22_hero_figure.py
 
-Outputs `v4_fig1_calls_boxstrip.{png,svg,pdf}`, a visual benchmark against the
-original hero figure, and the count/ANOVA/pairwise statistical tables.
+Outputs `v4_fig1_calls_by_genotype.{png,svg,pdf}`, a visual benchmark against
+the pooled-count version, and the mixed-ANOVA/post-hoc statistical tables.
 """
 from __future__ import annotations
 
@@ -175,8 +175,11 @@ def mouse_glyph(ax, cx: float, cy: float, length: float, color: str,
 def savefig(fig: plt.Figure, name: str) -> None:
     """Write png / svg / pdf side by side, as the lab convention requires."""
     for ext in ("png", "svg", "pdf"):
-        fig.savefig(OUT / f"{name}.{ext}", dpi=300 if ext == "png" else None,
-                    bbox_inches="tight")
+        target = OUT / f"{name}.{ext}"
+        temporary = OUT / f".{name}.tmp.{ext}"
+        fig.savefig(temporary, dpi=300 if ext == "png" else None,
+                    bbox_inches="tight", format=ext)
+        temporary.replace(target)
     plt.close(fig)
     print("saved", name)
 
@@ -305,71 +308,141 @@ def hero_behaviour_order(fold: pd.DataFrame) -> tuple[list[str], list[str]]:
 
 
 def behaviour_call_count_statistics(
-        S: dict, fold: pd.DataFrame) -> tuple[pd.DataFrame, dict, pd.DataFrame, list[str]]:
-    """Per-session call counts plus repeated-measures one-way inference.
+        S: dict, fold: pd.DataFrame
+) -> tuple[pd.DataFrame, dict, pd.DataFrame, list[str], list[str]]:
+    """Animal-level counts and a genotype x behaviour mixed ANOVA.
 
-    Every session contributes one count to every behaviour. The omnibus test is
-    therefore the within-session form of one-way ANOVA, and follow-ups are
-    paired two-sided t-tests. Bonferroni correction covers all k(k-1)/2 pairs.
-    This preserves the actual experimental unit instead of treating overlapping
-    behaviour counts as independent observations.
+    One animal is one independent observation. Genotype is between animals and
+    behaviour is repeated within animal. Counts are analysed after log1p
+    transformation because their raw distribution is extremely right-skewed and
+    contains zeros. Composite categories are excluded from inference because
+    they contain the atomic behaviours and would duplicate the same calls.
     """
-    order, dropped = hero_behaviour_order(fold)
+    selected, dropped = hero_behaviour_order(fold)
+    order = [b for b in selected if b not in ("ACTIVEsocial", "CONTACTmutual")]
     rows = []
     for animal in sorted(S):
         s = S[animal]
+        genotype = A.GENOTYPE_MAP[animal]
         for behaviour in order:
             j = s["names"].index(f"m1_{behaviour}")
             rows.append({
                 "animal_id": animal,
+                "genotype": genotype,
                 "behavior": behaviour,
                 "call_count": int(s["counts"][s["flags"][:, j]].sum()),
             })
     long = pd.DataFrame(rows)
-    wide = long.pivot(index="animal_id", columns="behavior", values="call_count")
-    Y = wide.reindex(columns=order).to_numpy(float)
+    wide = long.pivot(index=["animal_id", "genotype"], columns="behavior",
+                      values="call_count").reindex(columns=order)
+    animals = wide.index.get_level_values("animal_id").to_numpy()
+    groups = wide.index.get_level_values("genotype").to_numpy()
+    Y_raw = wide.to_numpy(float)
+    Y = np.log1p(Y_raw)
     n, k = Y.shape
+    levels = ("WT", "HET")
+    if set(groups) != set(levels):
+        raise ValueError(f"Expected WT and HET animals, found {sorted(set(groups))}")
 
     grand = float(Y.mean())
-    ss_behavior = float(n * np.square(Y.mean(axis=0) - grand).sum())
-    ss_session = float(k * np.square(Y.mean(axis=1) - grand).sum())
-    ss_total = float(np.square(Y - grand).sum())
-    ss_error = max(ss_total - ss_behavior - ss_session, 0.0)
+    behavior_mean = Y.mean(axis=0)
+    animal_mean = Y.mean(axis=1)
+    group_mean = {g: float(Y[groups == g].mean()) for g in levels}
+    group_behavior_mean = {g: Y[groups == g].mean(axis=0) for g in levels}
+    group_n = {g: int(np.sum(groups == g)) for g in levels}
+
+    ss_genotype = k * sum(group_n[g] * (group_mean[g] - grand) ** 2 for g in levels)
+    ss_animal_group = k * sum(
+        (animal_mean[i] - group_mean[groups[i]]) ** 2 for i in range(n))
+    ss_behavior = n * np.square(behavior_mean - grand).sum()
+    ss_interaction = sum(
+        group_n[g] * np.square(group_behavior_mean[g] - group_mean[g]
+                               - behavior_mean + grand).sum() for g in levels)
+    ss_error = sum(
+        np.square(Y[i] - animal_mean[i] - group_behavior_mean[groups[i]]
+                  + group_mean[groups[i]]).sum() for i in range(n))
+
+    df_genotype, df_animal_group = 1, n - len(levels)
     df_behavior = k - 1
-    df_error = (k - 1) * (n - 1)
+    df_error = df_animal_group * df_behavior
     ms_error = ss_error / df_error
-    F = (ss_behavior / df_behavior) / ms_error if ms_error > 0 else np.inf
-    p = float(stats.f.sf(F, df_behavior, df_error))
+    f_genotype = (ss_genotype / df_genotype) / (ss_animal_group / df_animal_group)
+    f_behavior = (ss_behavior / df_behavior) / ms_error
+    f_interaction = (ss_interaction / df_behavior) / ms_error
+
+    # Greenhouse-Geisser correction for the two within-animal effects.
+    residual = np.vstack([
+        Y[i] - animal_mean[i] - group_behavior_mean[groups[i]] + group_mean[groups[i]]
+        for i in range(n)
+    ])
+    covariance = np.cov(residual, rowvar=False, ddof=1)
+    centering = np.eye(k) - np.ones((k, k)) / k
+    centered_cov = centering @ covariance @ centering
+    epsilon = float(np.trace(centered_cov) ** 2 /
+                    (df_behavior * np.trace(centered_cov @ centered_cov)))
+    epsilon = float(np.clip(epsilon, 1 / df_behavior, 1.0))
+    df_behavior_gg = epsilon * df_behavior
+    df_error_gg = epsilon * df_error
+
     omnibus = {
-        "test": "one-way repeated-measures ANOVA",
-        "n_sessions": n,
+        "test": "two-way mixed ANOVA on log1p animal-level call counts",
+        "experimental_unit": "animal",
+        "n_animals": n,
+        "n_WT": group_n["WT"],
+        "n_HET": group_n["HET"],
         "n_behaviors": k,
-        "df_behavior": df_behavior,
-        "df_error": df_error,
-        "F": float(F),
-        "p": p,
-        "partial_eta_squared": float(ss_behavior / (ss_behavior + ss_error)),
+        "greenhouse_geisser_epsilon": epsilon,
+        "effects": {
+            "genotype": {
+                "F": float(f_genotype), "df1": 1.0,
+                "df2": float(df_animal_group),
+                "p": float(stats.f.sf(f_genotype, 1, df_animal_group)),
+                "partial_eta_squared": float(ss_genotype /
+                                             (ss_genotype + ss_animal_group)),
+            },
+            "behavior_GG": {
+                "F": float(f_behavior), "df1": df_behavior_gg,
+                "df2": df_error_gg,
+                "p": float(stats.f.sf(f_behavior, df_behavior_gg, df_error_gg)),
+                "partial_eta_squared": float(ss_behavior / (ss_behavior + ss_error)),
+            },
+            "genotype_x_behavior_GG": {
+                "F": float(f_interaction), "df1": df_behavior_gg,
+                "df2": df_error_gg,
+                "p": float(stats.f.sf(f_interaction, df_behavior_gg, df_error_gg)),
+                "partial_eta_squared": float(ss_interaction /
+                                             (ss_interaction + ss_error)),
+            },
+        },
     }
 
+    posthoc = []
+    for j, behavior in enumerate(order):
+        wt, het = Y[groups == "WT", j], Y[groups == "HET", j]
+        result = stats.ttest_ind(wt, het, equal_var=False, nan_policy="omit")
+        posthoc.append({
+            "family": "WT_vs_HET_within_behavior", "genotype": "WT_vs_HET",
+            "behavior_1": behavior, "behavior_2": behavior,
+            "t": float(result.statistic), "df": float(result.df),
+            "p_raw": float(result.pvalue),
+            "p_bonferroni": min(float(result.pvalue) * k, 1.0),
+        })
     n_pairs = k * (k - 1) // 2
-    pairs = []
-    for i in range(k):
-        for j in range(i + 1, k):
-            result = stats.ttest_rel(Y[:, i], Y[:, j], nan_policy="omit")
-            p_raw = float(result.pvalue)
-            p_adj = min(p_raw * n_pairs, 1.0)
-            difference = Y[:, i] - Y[:, j]
-            pairs.append({
-                "behavior_1": order[i],
-                "behavior_2": order[j],
-                "mean_difference": float(np.mean(difference)),
-                "t": float(result.statistic),
-                "df": int(np.isfinite(difference).sum() - 1),
-                "p_raw": p_raw,
-                "p_bonferroni": p_adj,
-                "significant_0.05": bool(p_adj < 0.05),
-            })
-    return long, omnibus, pd.DataFrame(pairs), dropped
+    for genotype in levels:
+        Z = Y[groups == genotype]
+        for i in range(k):
+            for j in range(i + 1, k):
+                result = stats.ttest_rel(Z[:, i], Z[:, j], nan_policy="omit")
+                posthoc.append({
+                    "family": "behavior_pairs_within_genotype",
+                    "genotype": genotype, "behavior_1": order[i],
+                    "behavior_2": order[j], "t": float(result.statistic),
+                    "df": float(result.df), "p_raw": float(result.pvalue),
+                    "p_bonferroni": min(float(result.pvalue) * n_pairs, 1.0),
+                })
+    posthoc = pd.DataFrame(posthoc)
+    posthoc["significant_0.05"] = posthoc["p_bonferroni"] < 0.05
+    return long, omnibus, posthoc, dropped, order
 
 
 def action_reaction(S: dict, rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
@@ -530,82 +603,96 @@ def panel_hero(ax, fold: pd.DataFrame, enr: pd.DataFrame) -> dict:
 
 def panel_call_counts(ax, counts: pd.DataFrame, omnibus: dict,
                       pairwise: pd.DataFrame, order: list[str]) -> None:
-    """(a) Horizontal box-and-strip plot of per-session calls by behaviour."""
-    values = [counts.loc[counts["behavior"] == b, "call_count"].to_numpy(float)
-              for b in order]
+    """(a) WT versus HET animal-level call-count box-and-strip plot."""
     y = np.arange(len(order))[::-1]
-    colors = [C_ACCENT if b in STARS else
-              C_ACCENT_LT if b == COMPOSITE else C_MUTE for b in order]
-
-    bp = ax.boxplot(values, positions=y, vert=False, widths=0.58,
-                    patch_artist=True, showfliers=False, whis=1.5,
-                    medianprops={"color": C_INK, "linewidth": 1.5},
-                    whiskerprops={"color": C_SEC, "linewidth": 1.0},
-                    capprops={"color": C_SEC, "linewidth": 1.0})
-    for box, color in zip(bp["boxes"], colors):
-        box.set_facecolor(matplotlib.colors.to_rgba(color, 0.30))
-        box.set_edgecolor(color)
-        box.set_linewidth(1.2)
-
+    genotype_style = {"WT": (C_ACCENT, 0.18), "HET": ("#dc6b35", -0.18)}
     rng = np.random.default_rng(SEED + 17)
-    for yi, vals, color in zip(y, values, colors):
-        jitter = rng.uniform(-0.19, 0.19, len(vals))
-        ax.scatter(vals, yi + jitter, s=28, color=color, edgecolor=C_SURF,
-                   linewidth=0.55, alpha=0.88, zorder=4)
+    max_count = 0.0
+    for genotype, (color, offset) in genotype_style.items():
+        values = [counts.loc[(counts["behavior"] == b)
+                             & (counts["genotype"] == genotype),
+                             "call_count"].to_numpy(float) for b in order]
+        max_count = max(max_count, max(float(np.max(v)) for v in values))
+        bp = ax.boxplot(values, positions=y + offset, orientation="horizontal",
+                        widths=0.28, patch_artist=True, showfliers=False, whis=1.5,
+                        medianprops={"color": C_INK, "linewidth": 1.15},
+                        whiskerprops={"color": color, "linewidth": 0.9},
+                        capprops={"color": color, "linewidth": 0.9})
+        for box in bp["boxes"]:
+            box.set_facecolor(matplotlib.colors.to_rgba(color, 0.27))
+            box.set_edgecolor(color)
+            box.set_linewidth(1.05)
+        for yi, vals in zip(y + offset, values):
+            jitter = rng.uniform(-0.075, 0.075, len(vals))
+            ax.scatter(vals, yi + jitter, s=27, color=color, edgecolor=C_SURF,
+                       linewidth=0.5, alpha=0.88, zorder=4)
 
     ax.set_xscale("symlog", linthresh=1.0, linscale=0.55, base=10)
     ticks = [0, 1, 3, 10, 30, 100, 300]
     ax.set_xticks(ticks, [str(t) for t in ticks])
-    max_count = max(float(np.max(v)) for v in values)
-    ax.set_xlim(-0.15, max(360.0, max_count * 1.35))
-    labels = [f"{PRETTY.get(b, b)}   (total {int(np.sum(v)):,})"
-              for b, v in zip(order, values)]
-    ax.set_yticks(y, labels, fontsize=9)
+    ax.set_xlim(-0.15, max(430.0, max_count * 1.55))
+    ax.set_yticks(y, [PRETTY.get(b, b) for b in order], fontsize=9)
     for lab, b in zip(ax.get_yticklabels(), order):
         if b in STARS:
             lab.set_fontweight("bold")
             lab.set_color(C_INK)
-    ax.set_ylim(-0.75, len(order) - 0.25)
-    ax.set_xlabel("calls per 10-minute session (each dot is one session; log-like axis)")
+    # Extra headroom keeps the ANOVA summary separate from the first data row.
+    ax.set_ylim(-0.85, len(order) + 0.65)
+    ax.set_xlabel("calls per 10-minute animal session (each dot is one animal; log-like axis)")
     ax.grid(axis="y", visible=False)
+    ax.legend(handles=[
+        plt.Line2D([], [], marker="o", ls="none", color=C_ACCENT, label="WT, n = 12"),
+        plt.Line2D([], [], marker="o", ls="none", color="#dc6b35", label="HET, n = 12"),
+    ], frameon=False, loc="upper left", ncol=2, fontsize=8.0,
+       bbox_to_anchor=(0.00, 1.005), borderaxespad=0)
 
-    significant = pairwise[pairwise["significant_0.05"]].sort_values(
-        "p_bonferroni")
-    if len(significant):
-        # Reserve the far-right margin for the strongest corrected comparisons.
-        shown = significant.head(8)
-        x_levels = np.geomspace(max_count * 1.04, max_count * 1.30, len(shown))
-        pos = dict(zip(order, y))
-        for x, (_, row) in zip(x_levels, shown.iterrows()):
-            y1, y2 = pos[row["behavior_1"]], pos[row["behavior_2"]]
-            ax.plot([x / 1.035, x, x, x / 1.035], [y1, y1, y2, y2],
-                    color=C_SEC, lw=0.75, clip_on=False)
-            stars = "***" if row["p_bonferroni"] < 0.001 else (
-                "**" if row["p_bonferroni"] < 0.01 else "*")
-            ax.text(x * 1.012, (y1 + y2) / 2, stars, va="center", ha="left",
-                    fontsize=7.5, color=C_INK)
-        if len(significant) > len(shown):
-            ax.text(0.99, 0.01, f"{len(significant) - len(shown)} additional corrected "
-                    "comparisons in CSV", transform=ax.transAxes, ha="right",
-                    va="bottom", fontsize=6.8, color=C_MUT)
-    else:
-        min_p = float(pairwise["p_bonferroni"].min())
-        ax.text(0.99, 0.02,
-                f"Pairwise paired t-tests: 0/{len(pairwise)} significant after "
-                f"Bonferroni correction (minimum adjusted p = {min_p:.3f})",
-                transform=ax.transAxes, ha="right", va="bottom", fontsize=7.4,
-                color=C_SEC, style="italic")
+    genotype_tests = pairwise[
+        pairwise["family"] == "WT_vs_HET_within_behavior"
+    ].set_index("behavior_1")
+    star_x = max_count * 1.18
+    for yi, behavior in zip(y, order):
+        p_adj = float(genotype_tests.loc[behavior, "p_bonferroni"])
+        stars = "***" if p_adj < 0.001 else "**" if p_adj < 0.01 else (
+            "*" if p_adj < 0.05 else "ns")
+        ax.text(star_x, yi, stars, ha="center", va="center", fontsize=8.0,
+                color=C_INK if stars != "ns" else C_MUT,
+                fontweight="bold" if stars != "ns" else "normal")
+    ax.text(star_x, len(order) - 0.42, "WT vs HET", ha="center", va="bottom",
+            fontsize=6.8, color=C_SEC)
 
-    ax.text(0.99, 0.98,
-            f"one-way repeated-measures ANOVA: F({omnibus['df_behavior']}, "
-            f"{omnibus['df_error']}) = {omnibus['F']:.2f}, "
-            f"p = {omnibus['p']:.2e}, partial eta squared = "
-            f"{omnibus['partial_eta_squared']:.2f}",
-            transform=ax.transAxes, ha="right", va="top", fontsize=8.0,
+    effects = omnibus["effects"]
+    g = effects["genotype"]
+    b = effects["behavior_GG"]
+    interaction = effects["genotype_x_behavior_GG"]
+    ax.text(0.99, 0.985,
+            "two-way mixed ANOVA on log(1 + count), N = 24 animals\n"
+            f"genotype: F({g['df1']:.0f}, {g['df2']:.0f}) = {g['F']:.2f}, "
+            f"p = {g['p']:.4f}; behavior: F({b['df1']:.2f}, {b['df2']:.1f}) "
+            f"= {b['F']:.2f}, p = {b['p']:.2e}\n"
+            f"genotype x behavior: F({interaction['df1']:.2f}, "
+            f"{interaction['df2']:.1f}) = {interaction['F']:.2f}, "
+            f"p = {interaction['p']:.4f} (GG corrected)",
+            transform=ax.transAxes, ha="right", va="top", fontsize=7.4,
             color=C_INK,
             bbox={"boxstyle": "round,pad=0.35", "fc": C_SURF,
                   "ec": C_BASE, "alpha": 0.94})
-    ax.set_title("a   Call counts differ across resident behaviours",
+
+    within = pairwise[(pairwise["family"] == "behavior_pairs_within_genotype")
+                      & pairwise["significant_0.05"]]
+    summaries = []
+    for genotype in ("WT", "HET"):
+        q = within[within["genotype"] == genotype]
+        terms = []
+        for r in q.itertuples():
+            high = r.behavior_1 if r.t > 0 else r.behavior_2
+            low = r.behavior_2 if r.t > 0 else r.behavior_1
+            terms.append(f"{PRETTY.get(high, high)} > {PRETTY.get(low, low)}")
+        summaries.append(f"{genotype}: " + (", ".join(terms) if terms else "none"))
+    ax.text(0.01, 0.012,
+            "Within-genotype behavior contrasts (Bonferroni):\n"
+            + "; ".join(summaries), transform=ax.transAxes, ha="left",
+            va="bottom", fontsize=6.4, color=C_SEC, style="italic")
+    ax.set_title("a   WT animals call more across behaviours; profile interaction p = 0.050",
                  loc="left", color=C_INK)
 
 
@@ -662,7 +749,7 @@ def panel_matrix(ax, tab: pd.DataFrame, st: dict) -> None:
             f"[{c_['lo']:.2f}, {c_['hi']:.2f}] when it is not",
             ha="left", va="top", fontsize=8.0, color=C_SEC)
     ax.text(-0.78, -1.32, "raw rates; ratios are cluster bootstraps over the "
-                          "24 sessions", ha="left", va="bottom", fontsize=6.8,
+                          "24 animals (one session each)", ha="left", va="bottom", fontsize=6.8,
             color=C_MUT, style="italic")
     ax.set_title("b   The resident's action sets the rate; the partner's\n"
                  "     retreat adds nothing on top of it", loc="left",
@@ -826,7 +913,7 @@ def panel_stats(ax, pred: dict, val: dict, hero: dict) -> None:
     """Compact reassurance strip: held-out prediction and cohort replication."""
     ax.set_axis_off()
     tiles = [
-        (f"{val['n_calls_partner']:,}", "attributed calls", "24 sessions"),
+        (f"{val['n_calls_partner']:,}", "attributed calls", "24 animals"),
         (f"{pred['both']['loso_auc_mean']:.2f}",
          "held-out AUC", "leave-one-session-out"),
         (f"ρ = {val['splithalf_rho_mean']:.2f}", "split-half replication",
@@ -849,7 +936,15 @@ def panel_stats(ax, pred: dict, val: dict, hero: dict) -> None:
 # --------------------------------------------------------------------------- #
 # Figure                                                                      #
 # --------------------------------------------------------------------------- #
-def build(df, fold, tab, st, pred, val, counts, omnibus, pairwise, dropped):
+def build(df, fold, enr, tab, st, pred, val, counts, omnibus, pairwise, dropped,
+          order, panel_a: str = "multiplier"):
+    """Assemble the figure.
+
+    `panel_a` selects the left-hand hero panel and nothing else, so the two
+    variants differ in exactly one object and the benchmark compares like with
+    like: "multiplier" is the movement-adjusted rate ratio with bootstrap CIs,
+    "counts" is the per-session box-and-strip of raw call counts.
+    """
     fig = plt.figure(figsize=(17.2, 9.6))
     outer = fig.add_gridspec(1, 2, width_ratios=[1.00, 1.20], wspace=0.15,
                              left=0.052, right=0.986, top=0.876, bottom=0.062)
@@ -857,9 +952,19 @@ def build(df, fold, tab, st, pred, val, counts, omnibus, pairwise, dropped):
     right = outer[0, 1].subgridspec(3, 1, height_ratios=[2.55, 1.95, 2.10],
                                     hspace=0.32)
 
-    order, _ = hero_behaviour_order(fold)
-    panel_call_counts(fig.add_subplot(left[0, 0]), counts, omnibus, pairwise, order)
-    hero = {"order": order, "dropped": dropped}
+    ax_a = fig.add_subplot(left[0, 0])
+    if panel_a == "counts":
+        panel_call_counts(ax_a, counts, omnibus, pairwise, order)
+        hero = {"order": order, "dropped": dropped}
+        note = ("shows animal-level WT and HET counts for atomic behaviours "
+                f"occupying ≥ {MIN_OCC_PCT:.0f}% of the window with ≥ "
+                f"{MIN_CALLS} calls. Composite and rarer states are omitted.")
+    else:
+        hero = panel_hero(ax_a, fold, enr)
+        note = ("shows only behaviours occupying ≥ "
+                f"{MIN_OCC_PCT:.0f}% of the window with ≥ {MIN_CALLS} calls "
+                f"({len(dropped)} rarer states omitted, incl. "
+                "withdrawal-after-contact, the one significant suppression).")
     panel_stats(fig.add_subplot(left[1, 0]), pred, val, hero)
 
     gs_top = right[0, 0].subgridspec(1, 2, width_ratios=[1.0, 0.88], wspace=0.38)
@@ -874,12 +979,9 @@ def build(df, fold, tab, st, pred, val, counts, omnibus, pairwise, dropped):
     fig.suptitle("Vocalisations track active pursuit: calling peaks while the "
                  "resident is sniffing and following its partner", y=0.965)
     fig.text(0.05, 0.925,
-             f"{val['n_calls_partner']:,} resident-attributed calls, {val['n_sessions']} "
-             "sessions, 100 ms bins of the 10-minute interaction window.  Panel a "
-             "shows per-session counts for behaviours occupying ≥ "
-             f"{MIN_OCC_PCT:.0f}% of the window with ≥ {MIN_CALLS} calls "
-             f"({len(hero['dropped'])} rarer states omitted).",
-             fontsize=8.4, color=C_SEC, ha="left", va="center")
+             f"{val['n_calls_partner']:,} resident-attributed calls, "
+             "N = 24 animals (12 WT, 12 HET), one session per animal, 100 ms bins.  Panel a "
+             + note, fontsize=8.4, color=C_SEC, ha="left", va="center")
     return fig
 
 
@@ -893,13 +995,13 @@ def save_benchmark(old_name: str, new_name: str) -> None:
     fig, axes = plt.subplots(2, 1, figsize=(17.2, 19.2))
     for ax, image, title in zip(
             axes, (old, new),
-            ("Previous version: movement-adjusted rate multipliers",
-             "New version: per-session call-count box-and-strip plot")):
+            ("Previous version: pooled animal-level call counts",
+             "New version: WT versus HET animal-level call counts")):
         ax.imshow(image)
         ax.set_axis_off()
         ax.set_title(title, loc="left", fontsize=14, pad=10)
     fig.tight_layout()
-    savefig(fig, "v4_fig1_hero_vs_calls_boxstrip")
+    savefig(fig, "v4_fig1_calls_boxstrip_vs_genotype")
 
 
 def main():
@@ -907,7 +1009,7 @@ def main():
     print("loading bins ...", flush=True)
     df = load_bins()
     S = session_cells(df)
-    print(f"{len(S)} sessions in the interaction window")
+    print(f"{len(S)} animals in the interaction window")
 
     print("bootstrapping call-rate multipliers ...", flush=True)
     fold = fold_with_ci(S, rng)
@@ -917,11 +1019,12 @@ def main():
           [["behavior", "occupancy_pct", "calls_in_state", "fold_adj",
             "fold_lo", "fold_hi"]].round(3).to_string(index=False))
 
-    print("\nper-session behaviour call counts ...", flush=True)
-    counts, omnibus, pairwise, dropped = behaviour_call_count_statistics(S, fold)
-    counts.to_csv(OUT / "hero_behavior_call_counts.csv", index=False)
-    pairwise.to_csv(OUT / "hero_behavior_call_counts_pairwise.csv", index=False)
-    with open(OUT / "hero_behavior_call_counts_anova.json", "w",
+    print("\nanimal-level genotype x behaviour call counts ...", flush=True)
+    counts, omnibus, pairwise, dropped, order = behaviour_call_count_statistics(S, fold)
+    counts.to_csv(OUT / "hero_behavior_call_counts_by_genotype.csv", index=False)
+    pairwise.to_csv(OUT / "hero_behavior_call_counts_by_genotype_posthoc.csv",
+                    index=False)
+    with open(OUT / "hero_behavior_call_counts_two_way_anova.json", "w",
               encoding="utf-8") as f:
         json.dump(omnibus, f, indent=2)
     print(json.dumps(omnibus, indent=2))
@@ -934,12 +1037,17 @@ def main():
     print(tab.round(3).to_string())
     print(json.dumps(st, indent=2))
 
+    enr = pd.read_csv(OUT / "beh_enrichment.csv")
     pred = json.load(open(OUT / "beh_prediction.json"))
     val = json.load(open(OUT / "beh_validation.json"))
 
-    fig = build(df, fold, tab, st, pred, val, counts, omnibus, pairwise, dropped)
-    savefig(fig, "v4_fig1_calls_boxstrip")
-    save_benchmark("v4_fig1_hero", "v4_fig1_calls_boxstrip")
+    # Both variants are rendered from the same run so the benchmark below never
+    # compares a fresh figure against a stale PNG left over from an earlier one.
+    args = (df, fold, enr, tab, st, pred, val, counts, omnibus, pairwise,
+            dropped, order)
+    savefig(build(*args, panel_a="multiplier"), "v4_fig1_hero")
+    savefig(build(*args, panel_a="counts"), "v4_fig1_calls_by_genotype")
+    save_benchmark("v4_fig1_calls_boxstrip", "v4_fig1_calls_by_genotype")
 
 
 if __name__ == "__main__":
