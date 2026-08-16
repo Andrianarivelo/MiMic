@@ -28,11 +28,11 @@ What changes, and why
                    and the behaviour state ribbon drawn on the same time axis. The
                    quantitative claim is grounded in one visible episode.
 
-(e) SOCIAL STATE   animal-level call number and animal-median syllable duration
-                   during active investigation, passive investigation and
-                   non-social periods. Diamonds carry animal-bootstrap 95% CIs;
-                   animals with no duration because they made no calls are
-                   explicitly marked rather than assigned a zero duration.
+(e) SOCIAL STATE   horizontal boxstrips of absolute animal-level call number and
+                   animal-median syllable duration during active investigation,
+                   passive investigation and non-social periods. Open diamonds
+                   carry animal-bootstrap 95% CIs; animals with no duration
+                   because they made no calls are explicitly marked.
 
 The validation panels of the original (LOSO AUC, split-half reliability) are
 demoted to a compact stat strip: they are reassurance, not the message.
@@ -461,10 +461,10 @@ def behaviour_call_count_statistics(
     return long, omnibus, posthoc, dropped, order
 
 
-def mixed_anova_log_counts(Y_raw: np.ndarray, groups: np.ndarray,
+def mixed_anova_raw_counts(Y_raw: np.ndarray, groups: np.ndarray,
                            factor_name: str) -> dict:
-    """Two-way mixed ANOVA for animal x repeated-factor count matrices."""
-    Y = np.log1p(np.asarray(Y_raw, float))
+    """Two-way mixed ANOVA on absolute animal counts."""
+    Y = np.asarray(Y_raw, float)
     groups = np.asarray(groups)
     levels = ("WT", "HET")
     n, k = Y.shape
@@ -505,22 +505,28 @@ def mixed_anova_log_counts(Y_raw: np.ndarray, groups: np.ndarray,
     epsilon = float(np.clip(epsilon, 1 / df_factor, 1.0))
     df_factor_gg, df_error_gg = epsilon * df_factor, epsilon * df_error
     return {
-        "test": f"genotype x {factor_name} mixed ANOVA on log1p animal counts",
+        "test": f"genotype x {factor_name} mixed ANOVA on absolute animal counts",
         "experimental_unit": "animal", "n_animals": n,
         "n_WT": group_n["WT"], "n_HET": group_n["HET"],
         "greenhouse_geisser_epsilon": epsilon,
         "effects": {
             "genotype": {"F": float(f_group), "df1": 1.0,
                          "df2": float(df_animal_group),
-                         "p": float(stats.f.sf(f_group, 1, df_animal_group))},
+                         "p": float(stats.f.sf(f_group, 1, df_animal_group)),
+                         "partial_eta_squared": float(
+                             ss_group / (ss_group + ss_animal_group))},
             factor_name: {"F": float(f_factor), "df1": df_factor_gg,
                           "df2": df_error_gg,
                           "p": float(stats.f.sf(f_factor, df_factor_gg,
-                                                df_error_gg))},
+                                                df_error_gg)),
+                          "partial_eta_squared": float(
+                              ss_factor / (ss_factor + ss_error))},
             f"genotype_x_{factor_name}": {
                 "F": float(f_interaction), "df1": df_factor_gg,
                 "df2": df_error_gg,
                 "p": float(stats.f.sf(f_interaction, df_factor_gg, df_error_gg)),
+                "partial_eta_squared": float(
+                    ss_interaction / (ss_interaction + ss_error)),
             },
         },
     }
@@ -570,28 +576,26 @@ def social_investigation_data(bins: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     wide = summary.pivot(index=["animal_id", "genotype"], columns="state",
                          values="call_count").reindex(columns=SOCIAL_STATES)
     groups = wide.index.get_level_values("genotype").to_numpy()
-    count_anova = mixed_anova_log_counts(wide.to_numpy(float), groups,
+    count_anova = mixed_anova_raw_counts(wide.to_numpy(float), groups,
                                          "social_state")
     count_tests = []
     duration_tests = []
     for state in SOCIAL_STATES:
         sub = summary[summary["state"] == state]
-        wt_count = np.log1p(sub.loc[sub["genotype"] == "WT", "call_count"])
-        het_count = np.log1p(sub.loc[sub["genotype"] == "HET", "call_count"])
+        wt_count = sub.loc[sub["genotype"] == "WT", "call_count"]
+        het_count = sub.loc[sub["genotype"] == "HET", "call_count"]
         result = stats.ttest_ind(wt_count, het_count, equal_var=False)
         count_tests.append({
-            "state": state, "test": "Welch t-test on log1p animal counts",
+            "state": state, "test": "Welch t-test on absolute animal counts",
             "t": float(result.statistic), "df": float(result.df),
             "p_raw": float(result.pvalue),
             "p_bonferroni": min(float(result.pvalue) * len(SOCIAL_STATES), 1.0),
         })
-        wt_dur = np.log(sub.loc[sub["genotype"] == "WT",
-                                "median_duration_ms"].dropna())
-        het_dur = np.log(sub.loc[sub["genotype"] == "HET",
-                                 "median_duration_ms"].dropna())
+        wt_dur = sub.loc[sub["genotype"] == "WT", "median_duration_ms"].dropna()
+        het_dur = sub.loc[sub["genotype"] == "HET", "median_duration_ms"].dropna()
         result = stats.ttest_ind(wt_dur, het_dur, equal_var=False)
         duration_tests.append({
-            "state": state, "test": "Welch t-test on log animal-median duration",
+            "state": state, "test": "Welch t-test on absolute animal-median duration",
             "n_WT": int(len(wt_dur)), "n_HET": int(len(het_dur)),
             "t": float(result.statistic), "df": float(result.df),
             "p_raw": float(result.pvalue),
@@ -948,8 +952,9 @@ def _bootstrap_median_ci(values: np.ndarray, seed: int) -> tuple[float, float, f
     return float(np.median(values)), float(lo), float(hi)
 
 
-def panel_social_investigation(ax_count, ax_duration, summary: pd.DataFrame,
-                               statistics: dict) -> None:
+def panel_social_investigation_vertical(ax_count, ax_duration,
+                                        summary: pd.DataFrame,
+                                        statistics: dict) -> None:
     """(e) Animal-level call abundance and syllable duration by social state."""
     short = {SOCIAL_STATES[0]: "active social\ninvestigation",
              SOCIAL_STATES[1]: "passive social\ninvestigation",
@@ -1049,6 +1054,120 @@ def panel_social_investigation(ax_count, ax_duration, summary: pd.DataFrame,
         plt.Line2D([], [], marker="D", ls="-", color=C_SEC, mfc="white",
                    label="median [95% CI]"),
     ], frameon=False, fontsize=7.2, loc="lower left", ncol=3)
+
+
+def panel_social_investigation(ax_count, ax_duration, summary: pd.DataFrame,
+                               statistics: dict) -> None:
+    """(e) Horizontal boxstrips on absolute count and duration scales."""
+    labels = {SOCIAL_STATES[0]: "active social investigation",
+              SOCIAL_STATES[1]: "passive social investigation",
+              SOCIAL_STATES[2]: "non-social"}
+    colors = {"WT": C_ACCENT, "HET": "#dc6b35"}
+    offsets = {"WT": 0.18, "HET": -0.18}
+    y = np.arange(len(SOCIAL_STATES))[::-1]
+
+    def draw_metric(ax, column: str, duration: bool = False) -> None:
+        for state_i, state in enumerate(SOCIAL_STATES):
+            for genotype_i, genotype in enumerate(("WT", "HET")):
+                center = y[state_i] + offsets[genotype]
+                sub = summary[(summary["state"] == state)
+                              & (summary["genotype"] == genotype)]
+                raw = sub[column].to_numpy(float)
+                valid = raw[np.isfinite(raw)]
+                if len(valid):
+                    bp = ax.boxplot(
+                        [valid], positions=[center], orientation="horizontal",
+                        widths=0.28, patch_artist=True, showfliers=False, whis=1.5,
+                        medianprops={"color": C_INK, "linewidth": 1.15},
+                        whiskerprops={"color": colors[genotype], "linewidth": 0.9},
+                        capprops={"color": colors[genotype], "linewidth": 0.9})
+                    box = bp["boxes"][0]
+                    box.set_facecolor(matplotlib.colors.to_rgba(colors[genotype], 0.25))
+                    box.set_edgecolor(colors[genotype])
+                    box.set_linewidth(1.05)
+                    x_plot, y_plot = visible_tie_jitter(valid, center)
+                    ax.scatter(x_plot, y_plot, s=22, color=colors[genotype],
+                               edgecolor=C_SURF, linewidth=0.5, alpha=0.9,
+                               zorder=4)
+                    med, lo, hi = _bootstrap_median_ci(
+                        valid, SEED + (200 if duration else 100)
+                        + state_i * 10 + genotype_i)
+                    ax.errorbar(med, center, xerr=[[med - lo], [hi - med]],
+                                fmt="D", ms=4.8, color=colors[genotype],
+                                mfc="white", mec=colors[genotype], mew=1.15,
+                                lw=1.35, capsize=2.5, zorder=6)
+                if duration:
+                    missing_n = int(np.sum(~np.isfinite(raw)))
+                    if missing_n:
+                        missing_y = center + np.linspace(-0.09, 0.09, missing_n)
+                        ax.scatter(np.zeros(missing_n), missing_y, marker="x",
+                                   s=22, color=colors[genotype], linewidth=1.2,
+                                   zorder=5)
+
+    draw_metric(ax_count, "call_count")
+    draw_metric(ax_duration, "median_duration_ms", duration=True)
+
+    for ax in (ax_count, ax_duration):
+        ax.set_yticks(y, [labels[s] for s in SOCIAL_STATES], fontsize=8)
+        ax.set_ylim(-0.72, len(SOCIAL_STATES) + 0.10)
+        ax.grid(axis="y", visible=False)
+
+    count_interaction = statistics["count_anova"]["effects"][
+        "genotype_x_social_state"]
+    ax_count.set_xlim(-7, 380)
+    ax_count.set_xticks([0, 50, 100, 150, 200, 250, 300, 350])
+    ax_count.set_xlabel("absolute call count per animal")
+    ax_count.set_title(
+        "e1  Absolute call number\n"
+        f"genotype x state: F({count_interaction['df1']:.2f}, "
+        f"{count_interaction['df2']:.1f}) = {count_interaction['F']:.2f}, "
+        f"p = {count_interaction['p']:.4f}\n"
+        f"raw counts, partial eta squared = "
+        f"{count_interaction['partial_eta_squared']:.3f}", loc="left")
+
+    ax_duration.set_xlim(-3, 105)
+    ax_duration.set_xticks([0, 20, 40, 60, 80, 100])
+    ax_duration.set_xlabel("animal-median call duration (ms)")
+    ax_duration.set_title("e2  Absolute call duration\n"
+                          "animal-level medians by social state", loc="left")
+    ax_duration.text(0.99, 0.985,
+                     "x at 0 = no calls, so duration is undefined",
+                     transform=ax_duration.transAxes, ha="right", va="top",
+                     fontsize=6.8, color=C_SEC)
+
+    count_tests = {r["state"]: r for r in statistics["count_genotype_posthoc"]}
+    duration_tests = {r["state"]: r
+                      for r in statistics["duration_genotype_posthoc"]}
+    for state_i, state in enumerate(SOCIAL_STATES):
+        ax_count.text(369, y[state_i],
+                      f"pAdj={count_tests[state]['p_bonferroni']:.3f}",
+                      ha="right", va="center", fontsize=7.0, color=C_SEC)
+        ax_duration.text(102, y[state_i],
+                         f"pAdj={duration_tests[state]['p_bonferroni']:.3f}",
+                         ha="right", va="center", fontsize=7.0, color=C_SEC)
+
+    duration_n = []
+    for state in SOCIAL_STATES:
+        sub = summary[summary["state"] == state]
+        nw = int(sub.loc[sub["genotype"] == "WT", "median_duration_ms"].notna().sum())
+        nh = int(sub.loc[sub["genotype"] == "HET", "median_duration_ms"].notna().sum())
+        duration_n.append(f"{labels[state]} {nw}/{nh}")
+    ax_duration.text(0.01, 0.018, "duration N (WT/HET): " + "; ".join(duration_n),
+                     transform=ax_duration.transAxes, ha="left", va="bottom",
+                     fontsize=6.3, color=C_MUT)
+
+    legend = [
+        plt.Line2D([], [], marker="o", ls="none", color=colors["WT"],
+                   label="WT, n=12"),
+        plt.Line2D([], [], marker="o", ls="none", color=colors["HET"],
+                   label="HET, n=12"),
+        Patch(facecolor=matplotlib.colors.to_rgba(C_MUTE, 0.25), edgecolor=C_SEC,
+              label="box: IQR; line: median"),
+        plt.Line2D([], [], marker="D", ls="-", color=C_SEC, mfc="white",
+                   label="diamond: median [bootstrap 95% CI]"),
+    ]
+    ax_count.legend(handles=legend, frameon=False, fontsize=6.8,
+                    loc="upper left", ncol=2, borderaxespad=0.2)
 
 
 def panel_matrix(ax, tab: pd.DataFrame, st: dict) -> None:
@@ -1294,12 +1413,12 @@ def panel_stats(ax, pred: dict, val: dict, hero: dict) -> None:
 def build_social_panel_figure(summary: pd.DataFrame,
                               statistics: dict) -> plt.Figure:
     """Standalone, publication-sized rendering of the new social-state panel."""
-    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.25),
-                             gridspec_kw={"wspace": 0.25})
+    fig, axes = plt.subplots(1, 2, figsize=(13.5, 4.8),
+                             gridspec_kw={"wspace": 0.32})
     panel_social_investigation(axes[0], axes[1], summary, statistics)
     fig.suptitle("Call abundance and duration across social-investigation states",
                  y=1.01, fontsize=14)
-    fig.subplots_adjust(left=0.075, right=0.985, top=0.82, bottom=0.20)
+    fig.subplots_adjust(left=0.075, right=0.985, top=0.72, bottom=0.19)
     return fig
 
 
