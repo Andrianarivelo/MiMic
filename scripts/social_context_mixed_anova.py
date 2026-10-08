@@ -38,12 +38,15 @@ COLORS={'WT':'#327A9E','HET':'#E68A32'}
 LIGHT_COLORS={'WT':'#BED5E1','HET':'#F6D9BB'}
 TITLES=['Call probability','Call frequency','Number of calls']
 YLABELS=['Bins with ≥1 call (%)','Calls / min','Calls']
-FIGSIZE=(12.6,8.0)
+FIGSIZE=(12.6,6.0)
 BOX_WIDTH=.34
 POINT_SIZE=24
 JITTER=.065
 DPI=400
 FORMATS=['png','pdf','svg']
+DEFAULT_CORRECTION='fdr_bh'
+CORRECTIONS={'holm':'Holm','bonferroni':'Bonferroni','sidak':'Šidák',
+             'fdr_bh':'Benjamini–Hochberg (FDR)'}
 
 
 def fingerprint() -> dict:
@@ -167,24 +170,24 @@ def validate(data:pd.DataFrame,anova:pd.DataFrame,post:pd.DataFrame,out:Path) ->
     if not result.passed.all():raise AssertionError(result.to_string())
 
 
-def draw(data:pd.DataFrame,anova:pd.DataFrame,post:pd.DataFrame,assumptions:pd.DataFrame,out:Path) -> None:
-    """Show the four conditions together with paired strips and Holm p labels."""
+def draw(data:pd.DataFrame,post:pd.DataFrame,out:Path,correction:str) -> None:
+    """Render only four simple contrasts, retaining the full correction family."""
     plt.rcParams.update({'font.family':'DejaVu Sans','font.size':9,'axes.spines.top':False,
         'axes.spines.right':False,'axes.linewidth':.8,'axes.edgecolor':'#7A8992',
         'svg.fonttype':'none','pdf.fonttype':42})
     fig,axes=plt.subplots(1,3,figsize=FIGSIZE)
-    fig.subplots_adjust(left=.07,right=.975,bottom=.34,top=.73,wspace=.30)
+    fig.subplots_adjust(left=.07,right=.975,bottom=.18,top=.72,wspace=.30)
     fig.text(.07,.95,'SOCIAL CONTEXT & VOCAL OUTPUT',fontsize=10,weight='bold',color='#667780')
     fig.text(.07,.901,'Inside versus outside social bouts',fontsize=22,weight='bold',color='#172F3D')
     fig.text(.07,.851,'Partner present only: 300–900 s   ·   WT n=12 / Het n=12   ·   each dot = one recording',fontsize=11,color='#667780')
     fig.text(.07,.803,'Solid color: inside     |     Light color: outside     |     Lines connect the same recording',fontsize=10,color='#667780')
     positions=[0,1,2.5,3.5];cells=list(itertools.product(GROUPS,CONTEXTS));rng=np.random.default_rng(SEED)
-    # Nonoverlapping short brackets share a level; all six pairwise comparisons
-    # appear, including the two cross-context/cross-genotype contrasts.
-    levels={(0,1):0,(2,3):0,(0,2):1,(1,3):2,(1,2):3,(0,3):4}
+    # Show the four simple comparisons requested by the two-factor design.
+    # Both diagonal cell comparisons remain in the complete 18-test family.
+    levels={(0,1):0,(2,3):0,(0,2):1,(1,3):2}
     for j,(metric,title,ylabel) in enumerate(zip(METRICS,TITLES,YLABELS)):
         ax=axes[j];d=data[data.included];peak=max(float(d[metric].max()),1.)
-        ax.set_ylim(-.055*peak,peak*1.74);ax.set_xlim(-.5,4)
+        ax.set_ylim(-.055*peak,peak*1.49);ax.set_xlim(-.5,4)
         ax.yaxis.grid(True,color='#EAF0F3',lw=.7);ax.set_axisbelow(True)
         for k,g in enumerate(GROUPS):
             w=d[d.genotype==g].pivot(index='animal_id',columns='state',values=metric).dropna()
@@ -204,27 +207,16 @@ def draw(data:pd.DataFrame,anova:pd.DataFrame,post:pd.DataFrame,assumptions:pd.D
             r=t[(t.group1==g1)&(t.context1==c1)&(t.group2==g2)&(t.context2==c2)].iloc[0]
             y=peak*(1.07+level*.13);h=peak*.022
             ax.plot([positions[i1],positions[i1],positions[i2],positions[i2]],[y,y+h,y+h,y],color='#667780',lw=.75)
-            ax.text((positions[i1]+positions[i2])/2,y+h*1.7,f'pH {ptext(r.p_holm)}',
+            value=ptext(r.p_adjusted)
+            annotation=f'p<{value[1:]}' if value.startswith('<') else f'p={value}'
+            ax.text((positions[i1]+positions[i2])/2,y+h*1.7,annotation,
                 ha='center',va='bottom',fontsize=7.5,color='#344954')
         ax.set_xticks(positions,['WT\nInside','WT\nOutside','Het\nInside','Het\nOutside'])
         ax.set_ylabel(ylabel);ax.set_title(title,fontsize=12,weight='bold',color='#172F3D',pad=16)
         ax.text(-.12,1.035,chr(65+j),transform=ax.transAxes,fontsize=11,weight='bold')
         ax.tick_params(length=3)
-        # Put all three ANOVA terms below the plot, with F and adjusted p.
-        aa=anova[anova.metric==metric]
-        box=ax.get_position();ta=fig.add_axes([box.x0,.135,box.width,.135]);ta.axis('off')
-        ta.text(0,1.09,'Two-way mixed ANOVA',fontsize=10,weight='bold',color='#344954')
-        ta.text(0,.83,'Effect',fontsize=8,color='#667780');ta.text(.57,.83,'F(1,22)',fontsize=8,color='#667780');ta.text(.99,.83,'p Holm',ha='right',fontsize=8,color='#667780')
-        for k,r in enumerate(aa.itertuples()):
-            yy=.58-k*.26
-            ta.text(0,yy,r.effect,fontsize=8,color='#344954')
-            ta.text(.57,yy,f'{r.F:.2f}',fontsize=8,color='#344954')
-            ta.text(.99,yy,ptext(r.p_holm),ha='right',fontsize=8,color='#344954')
-    fig.text(.07,.079,'pH = Holm-adjusted p across all 18 cell comparisons. ANOVA p: Holm across all 9 effects. Raw units; paired context within recording.',fontsize=8,color='#667780')
-    fig.text(.07,.051,'Probability: ≥1 call / 100 ms. Frequency: calls / observed min. Counts: raw totals. Outside remains within the partner-present period.',fontsize=8,color='#667780')
-    caution='Raw-scale ANOVA assumptions show violations; treat inference as exploratory. HC3 sensitivity and complete diagnostics are exported.' if assumptions.flag.any() else 'Residual normality and genotype variance diagnostics exported; recording independence remains an assumption.'
-    fig.text(.07,.023,caution,fontsize=8,color='#667780')
-    for fmt in FORMATS:fig.savefig(out/f'social_context_mixed_anova.{fmt}',dpi=DPI,bbox_inches='tight',facecolor='white')
+    fig.text(.07,.040,f'Adjusted p: {CORRECTIONS[correction]} · same 18-comparison family · exploratory analysis',fontsize=8,color='#667780')
+    for fmt in FORMATS:fig.savefig(out/f'social_context_{correction}.{fmt}',dpi=DPI,bbox_inches='tight',facecolor='white')
     plt.close(fig)
 
 
@@ -273,6 +265,8 @@ def main() -> None:
     """Reproduce numerical cache or regenerate only its figure and report."""
     parser=argparse.ArgumentParser(description=__doc__)
     m=parser.add_mutually_exclusive_group();m.add_argument('--recompute',action='store_true');m.add_argument('--figures-only',action='store_true')
+    parser.add_argument('--correction',choices=list(CORRECTIONS),default=DEFAULT_CORRECTION)
+    parser.add_argument('--compare-corrections',action='store_true',help='Export all correction variants and a comparison table.')
     args=parser.parse_args();out=OUTPUT;out.mkdir(parents=True,exist_ok=True)
     fp=json.loads(json.dumps(fingerprint()));meta=out/'provenance.json'
     names=['session_metrics','mixed_anova','posthoc_comparisons','assumption_checks','hc3_sensitivity']
@@ -287,9 +281,45 @@ def main() -> None:
             model='two-way mixed ANOVA: genotype between, context within',scale='raw'),indent=2),encoding='utf-8')
     data,anova,post,assumptions,robust=[pd.read_csv(out/f'{n}.csv',dtype={'animal_id':str}) for n in names]
     validate(data,anova,post,out)
-    draw(data,anova,post,assumptions,out);report(out,data,anova,post,assumptions)
-    print(anova[['metric','effect','F','p','p_holm']].to_string(index=False))
-    print(post[['metric','group1','context1','group2','context2','p_holm']].to_string(index=False))
+    report(out,data,anova,post,assumptions)
+    # Recalculate only inexpensive corrections of cached raw p values.
+    # All methods use precisely the same tests and 18-comparison family.
+    comparison=out/'correction_comparison';comparison.mkdir(exist_ok=True)
+    post_tables=[];anova_tables=[];summary=[]
+    for method in CORRECTIONS:
+        pp=post.copy();pp['correction']=method
+        pp['p_adjusted']=multipletests(pp.p,method=method)[1]
+        aa=anova.copy();aa['correction']=method
+        aa['p_adjusted']=multipletests(aa.p,method=method)[1]
+        post_tables.append(pp);anova_tables.append(aa)
+        summary.append(dict(method=method,label=CORRECTIONS[method],family_size=len(pp),
+            significant_comparisons=int((pp.p_adjusted<ALPHA).sum()),minimum_adjusted_p=float(pp.p_adjusted.min())))
+        if args.compare_corrections or method==args.correction:
+            folder=comparison/method;folder.mkdir(exist_ok=True)
+            draw(data,pp,folder,method)
+    pd.concat(post_tables,ignore_index=True).to_csv(comparison/'posthoc_correction_methods.csv',index=False)
+    pd.concat(anova_tables,ignore_index=True).to_csv(comparison/'anova_correction_methods.csv',index=False)
+    pd.DataFrame(summary).to_csv(comparison/'correction_summary.csv',index=False)
+    (comparison/'provenance.json').write_text(json.dumps(dict(primary_fingerprint=fp,
+        selected_method=args.correction,methods=CORRECTIONS,posthoc_family_size=18,anova_family_size=9,
+        figure_contrasts='four simple cell contrasts per metric; diagonal contrasts retained in correction',
+        correction_code=hashlib.sha256(inspect.getsource(main).encode()).hexdigest()),indent=2),encoding='utf-8')
+    (comparison/'README.md').write_text(
+        '# Correction comparison and simplified figures\n\n'
+        'All methods use the same cached raw-scale paired/Welch t tests, 24 recordings and 18-test family. '
+        'No test, cohort or correction family is selected to obtain significance. '
+        'BH is the default exploratory FDR variant; Holm, Bonferroni and Sidak are exported for comparison. '
+        'Holm/Bonferroni control familywise error without independence requirements. '
+        'Sidak assumes independent tests, which these correlated metrics and shared recordings do not guarantee. '
+        'BH controls FDR under independence or appropriate positive dependence; it is not the same error criterion as Holm.\n\n'
+        'Labels p= denote the selected adjusted p, not raw p. Four simple comparisons are displayed; '
+        'all six cell comparisons per metric remain corrected. The ANOVA, assumption diagnostics and complete statistics '
+        'remain in the parent directory, and every method is also tabulated here. '
+        'The raw-scale tests remain exploratory because residual and variance assumptions fail. '
+        'Previous six-bracket/table figure is preserved.\n\n'
+        'Method definitions: [statsmodels multipletests](https://www.statsmodels.org/stable/generated/statsmodels.stats.multitest.multipletests.html).\n',encoding='utf-8')
+    print(pd.DataFrame(summary).to_string(index=False))
+    print(f'Selected simplified figure: {args.correction}; complete statistics exported.',flush=True)
 
 
 if __name__=='__main__':main()
